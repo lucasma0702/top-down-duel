@@ -132,6 +132,17 @@
   const STRIKER_AI_DIST_MARGIN = 20;
   const ATTACK_ARC = Math.PI * 0.85;
   const KNOCKBACK = 585;
+  /** Mouse/gamepad aim normally overrides facing outright every frame, which
+   *  otherwise hides knockback entirely (keyboard-aim players turn to face
+   *  it for free, since their facing already falls back to raw velocity
+   *  direction whenever they're not actively steering). This is the longest
+   *  a full-strength hit can hold facing toward the knockback direction
+   *  before easing back to wherever the player is aiming; weaker hits get
+   *  proportionally less pull and a shorter hold. */
+  const KNOCK_FACING_MAX_DURATION = 0.5;
+  /** Ignore knockback impulses smaller than this — avoids a visible facing
+   *  flicker from trivial pokes. */
+  const KNOCK_FACING_MIN_MAG = 20;
   /** Pike — charged long, narrow spear corridor (area along facing). */
   const LANCE_RANGE_MIN = 118;
   const LANCE_RANGE_MAX = 268;
@@ -208,6 +219,14 @@
   const MARIONETTE_EFFIGY_DURATION = 14;
   const RANGED_SPEED = 395;
   const RANGED_MAX_DIST = 210;
+  /** Deadeye Lock — Marksman's ult: one big homing shot instead of a
+   *  pellet volley. Deals flat damage (no distance falloff) on hit. */
+  const MARKSMAN_ULT_DAMAGE_MUL = 3.2;
+  const MARKSMAN_ULT_SPEED = 340;
+  const MARKSMAN_ULT_HIT_R = 30;
+  const MARKSMAN_ULT_MAX_DIST = 900;
+  /** How fast (rad/s) the shot can curve toward its target while homing. */
+  const MARKSMAN_ULT_HOMING_TURN_RATE = 2.2;
   /** Echo summons — short cone copies that mirror the summoner's moves. */
   const ECHO_SUMMON_COUNT = 6;
   const ECHO_SUMMON_HP = 14;
@@ -414,7 +433,14 @@
   const RICOCHET_SHOT_SPEED = 480;
   const RICOCHET_MAX_DIST = 1280;
   const RICOCHET_MAX_BOUNCES = 12;
+  /** Hitbox: how close a bolt has to be to a fighter to deal damage. Same
+   *  for normal shots and Prism Cascade bolts. */
   const RICOCHET_HIT_R = 11;
+  /** Hurtbox: how big a target a Prism Cascade bolt is for enemy attacks to
+   *  hit it (see resolveRicochetUltHitsFromEnemyProjectiles) — bigger than
+   *  its hitbox, so it's an easier bolt to shoot down than it is to be hit
+   *  by. Also drives its (correspondingly bigger) on-screen size. */
+  const RICOCHET_ULT_HURT_R = 50;
   const RICOCHET_ATTACK_COOLDOWN = 0.22;
   const RICOCHET_SHOT_LIFE = 7;
   /** Prism Cascade ult bolt lifetime (before hit resets). */
@@ -623,6 +649,8 @@
   const BOSS_BEAM_TRIGGER_MIN = 100;
   const BOSS_BEAM_TRIGGER_MAX = 330;
   const LASER_RANGE = 285;
+  /** Meltdown (ult) beam reaches noticeably farther than the normal beam. */
+  const LASER_ULT_RANGE = 430;
   const LASER_BEAM_HALF_WIDTH = 36;
   const LASER_DPS = 19;
   /** Hold attack this long before the beam deals damage. */
@@ -682,7 +710,7 @@
       moveSpeedMul: 0.98,
       rangedRangeMul: 1.86,
       attackDamageMul: 0.94,
-      desc: "94 HP — long-range bolts. <strong>Ult</strong>: Deadeye Barrage — rapid volley.",
+      desc: "94 HP — long-range bolts. <strong>Ult</strong>: Deadeye Lock — one huge homing shot, heavy damage.",
       tint: "#a78bfa",
     },
     striker: {
@@ -2723,45 +2751,42 @@
   }
 
   function fireUltimateMarksman(p) {
+    // Deadeye Lock: one big shot that homes in on the nearest enemy and
+    // hits hard, instead of the old spread-fire pellet volley.
     const ratio = 1;
     p.swingId += 1;
     p.swingDamage =
       (DAMAGE_MIN + (DAMAGE_MAX - DAMAGE_MIN) * ratio) *
       p.damageMultiplier *
       (p.attackDamageMul || 1) *
-      1.15;
-    const count = 7;
-    const spread = 0.38;
-    const ox = p.x + Math.cos(p.facing) * (getPlayerRadius(p) + 8);
-    const oy = p.y + Math.sin(p.facing) * (getPlayerRadius(p) + 8);
-    for (let i = 0; i < count; i++) {
-      const t = count === 1 ? 0 : i / (count - 1) - 0.5;
-      const ang = p.facing + t * spread;
-      const speed = RANGED_SPEED * 1.05;
-      projectiles.push({
-        kind: "ranged",
-        pelletIdx: i,
-        x: ox,
-        y: oy,
-        px: ox,
-        py: oy,
-        spawnX: ox,
-        spawnY: oy,
-        vx: Math.cos(ang) * speed,
-        vy: Math.sin(ang) * speed,
-        baseSpeed: speed,
-        age: 0,
-        ownerNum: p.playerNum,
-        swingId: p.swingId,
-        baseDamage: p.swingDamage,
-        knockMul: p.swingKnockMul,
-        maxDist: RANGED_MAX_DIST * (p.rangedRangeMul || 1) * 1.1,
-        traveled: 0,
-        r: RANGED_HIT_R,
-        color: p.color,
-        ultShot: true,
-      });
-    }
+      MARKSMAN_ULT_DAMAGE_MUL;
+    const ang = p.facing;
+    const speed = MARKSMAN_ULT_SPEED;
+    const ox = p.x + Math.cos(ang) * (getPlayerRadius(p) + 10);
+    const oy = p.y + Math.sin(ang) * (getPlayerRadius(p) + 10);
+    projectiles.push({
+      kind: "ranged",
+      x: ox,
+      y: oy,
+      px: ox,
+      py: oy,
+      spawnX: ox,
+      spawnY: oy,
+      vx: Math.cos(ang) * speed,
+      vy: Math.sin(ang) * speed,
+      baseSpeed: speed,
+      age: 0,
+      ownerNum: p.playerNum,
+      swingId: p.swingId,
+      baseDamage: p.swingDamage,
+      knockMul: p.swingKnockMul * 1.6,
+      maxDist: MARKSMAN_ULT_MAX_DIST,
+      traveled: 0,
+      r: MARKSMAN_ULT_HIT_R,
+      color: p.color,
+      ultShot: true,
+      homing: true,
+    });
     p.ultFlashT = 0.35;
   }
 
@@ -4526,7 +4551,7 @@
     const r = getPlayerRadius(p);
     const x0 = p.x + cx * (r + 8);
     const y0 = p.y + cy * (r + 8);
-    let dist = LASER_RANGE;
+    let dist = (p.ultLaserT || 0) > 0 ? LASER_ULT_RANGE : LASER_RANGE;
     const wallDist = rayDistToArenaWall(x0, y0, cx, cy, 4);
     if (wallDist > 0) {
       dist = Math.min(dist, wallDist);
@@ -7984,6 +8009,24 @@
     return d;
   }
 
+  function lerpAngle(a, b, t) {
+    return a + angleDiff(b, a) * t;
+  }
+
+  /** Records that `p` just took a knockback impulse of (kvx, kvy), so
+   *  mouse/gamepad-aim players can be turned toward it (see
+   *  KNOCK_FACING_MAX_DURATION) the same way keyboard-aim players already
+   *  are for free via raw velocity. Duration (and thus how long the turn
+   *  holds before easing back to the aim direction) scales with how hard
+   *  the hit was, relative to a baseline knockback impulse. */
+  function applyKnockFacingPull(p, kvx, kvy) {
+    const mag = len(kvx, kvy);
+    if (mag < KNOCK_FACING_MIN_MAG) return;
+    const strength = clamp(mag / KNOCKBACK, 0, 1.5);
+    p.knockFacingAngle = Math.atan2(kvy, kvx);
+    p.knockFacingT = KNOCK_FACING_MAX_DURATION * strength;
+  }
+
   function rangedDistForPlayer(p, ratio) {
     const rm = p.rangedRangeMul != null ? p.rangedRangeMul : 1;
     return RANGED_MAX_DIST * rm * (0.65 + 0.35 * ratio);
@@ -8102,6 +8145,8 @@
       chargeT: 0,
       chargeHoldT: 0,
       stunT: 0,
+      knockFacingT: 0,
+      knockFacingAngle: 0,
       reaverRuinRootT: 0,
       reaverHookDisarmT: 0,
       needsRelease: false,
@@ -11963,6 +12008,9 @@
   function applyMovementFromAxes(p, ix, iy, dt, speedMul) {
     tickSlowDebuff(p, dt);
     tickPhoenixReviveBuff(p, dt);
+    if ((p.knockFacingT || 0) > 0) {
+      p.knockFacingT = Math.max(0, p.knockFacingT - dt);
+    }
     if (p.stunT > 0 || isReaverRuinRooted(p)) {
       p.vx = 0;
       p.vy = 0;
@@ -11984,7 +12032,16 @@
     }
 
     if (p.aimOverrideAngle != null) {
-      p.facing = p.aimOverrideAngle;
+      if ((p.knockFacingT || 0) > 0) {
+        // Mouse/gamepad aim would otherwise fully mask knockback (unlike
+        // keyboard, whose facing already falls back to raw velocity
+        // direction) — ease toward the hit direction, proportional to how
+        // much of the pull is left, then hand back to normal aim.
+        const pull = clamp(p.knockFacingT / KNOCK_FACING_MAX_DURATION, 0, 1);
+        p.facing = lerpAngle(p.aimOverrideAngle, p.knockFacingAngle, pull);
+      } else {
+        p.facing = p.aimOverrideAngle;
+      }
     } else if (sp > 8) {
       p.facing = Math.atan2(p.vy, p.vx);
     }
@@ -14135,6 +14192,7 @@
           );
           defender.vx += n.x * kb;
           defender.vy += n.y * kb;
+          applyKnockFacingPull(defender, n.x * kb, n.y * kb);
         }
       }
       if (defender.hp < 1) defender.hp = 1;
@@ -14180,8 +14238,11 @@
     const kbResist =
       defender.knockbackResistMul != null ? defender.knockbackResistMul : 1;
     if (opts.kb != null) {
-      defender.vx += opts.kb.vx * kbResist;
-      defender.vy += opts.kb.vy * kbResist;
+      const kvx = opts.kb.vx * kbResist;
+      const kvy = opts.kb.vy * kbResist;
+      defender.vx += kvx;
+      defender.vy += kvy;
+      applyKnockFacingPull(defender, kvx, kvy);
     } else if (opts.knockFrom && opts.knockMul != null) {
       const src = opts.knockFrom;
       const dx = defender.x - src.x;
@@ -14190,6 +14251,7 @@
       const kb = applyNovaChaosKnock(defender, KNOCKBACK * opts.knockMul * kbResist);
       defender.vx += n.x * kb;
       defender.vy += n.y * kb;
+      applyKnockFacingPull(defender, n.x * kb, n.y * kb);
     }
     if (
       opts.stunT != null &&
@@ -14948,10 +15010,12 @@
       life: life,
       maxLife: life,
       bouncesLeft: ult ? tune.maxBounces + 4 : tune.maxBounces,
-      r: RICOCHET_HIT_R,
+      r: ult ? RICOCHET_ULT_HURT_R : RICOCHET_HIT_R,
+      hitboxR: RICOCHET_HIT_R,
       color: p.color,
       hitLockT: 0,
       ultShot: ult,
+      ultDamageLoss: ult ? 0 : undefined,
     });
   }
 
@@ -15336,7 +15400,7 @@
       if (target.hp <= 0) continue;
       if (!fightersCanDamage(owner, target)) continue;
 
-      const hitR = pr.r + getPlayerRadius(target);
+      const hitR = (pr.hitboxR != null ? pr.hitboxR : pr.r) + getPlayerRadius(target);
       const dPrev = len(target.x - pr.px, target.y - pr.py);
       const dNow = len(target.x - pr.x, target.y - pr.y);
       const wasInside = dPrev < hitR;
@@ -15368,7 +15432,11 @@
         pr.ownerNum + ":" + pr.swingId + ":" + (pr.hitSeq || 0);
       if (target.lastHitSwingKey === swingKey) continue;
 
-      applyDamageTo(target, owner, ricochetBoltDamage(pr), {
+      const hitDmg = Math.max(
+        0,
+        ricochetBoltDamage(pr) - (pr.ultDamageLoss || 0)
+      );
+      applyDamageTo(target, owner, hitDmg, {
         hitFlash: 0.16,
         swingKey: swingKey,
         knockFrom: { x: pr.x, y: pr.y },
@@ -15385,6 +15453,37 @@
         projectiles.splice(i, 1);
       }
       return;
+    }
+  }
+
+  /** Prism Cascade bolts can get shot down mid-flight: any other player's
+   *  projectile that connects with an ult bolt permanently eats into the
+   *  damage that bolt deals on its future fighter hits (by however much
+   *  that incoming attack would itself have dealt) — burn it down enough
+   *  and it stops dealing any damage at all. Run once per frame, before
+   *  updateProjectiles, so every splice below is settled before that
+   *  loop's own indices are handed out. */
+  function resolveRicochetUltHitsFromEnemyProjectiles() {
+    for (let i = projectiles.length - 1; i >= 0; i--) {
+      const pr = projectiles[i];
+      if (!pr.ultShot) continue;
+      const owner = players.find((pl) => pl.playerNum === pr.ownerNum);
+      if (!owner) continue;
+      for (let k = projectiles.length - 1; k >= 0; k--) {
+        if (k === i) continue;
+        const other = projectiles[k];
+        if (other.ownerNum === pr.ownerNum) continue;
+        const otherOwner = players.find((pl) => pl.playerNum === other.ownerNum);
+        if (!otherOwner || !fightersCanDamage(otherOwner, owner)) continue;
+        const hitR = (pr.r || RICOCHET_HIT_R) + (other.r || 6);
+        if (len(pr.x - other.x, pr.y - other.y) > hitR) continue;
+        const incomingDmg = projectileBoltDamage(other, pr) || 0;
+        pr.ultDamageLoss = (pr.ultDamageLoss || 0) + Math.max(0, incomingDmg);
+        spawnHitSparks(pr.x, pr.y, other.color || "#fff", 4);
+        projectiles.splice(k, 1);
+        if (k < i) i--;
+        break;
+      }
     }
   }
 
@@ -15413,7 +15512,9 @@
   }
 
   function projectileBoltDamage(pr, target) {
-    if (pr.kind === "phoenix" || pr.kind === "barrage") return pr.baseDamage;
+    if (pr.kind === "phoenix" || pr.kind === "barrage" || pr.homing) {
+      return pr.baseDamage;
+    }
     if (pr.kind === "spread") return spreadBoltDamage(pr, target);
     if (pr.kind === "nova") return novaBoltDamage(pr, target);
     if (pr.kind === "bounce") return ricochetBoltDamage(pr);
@@ -15463,6 +15564,25 @@
       const isSpread = pr.kind === "spread";
       const isNova = pr.kind === "nova";
       const isBarrage = pr.kind === "barrage";
+
+      if (pr.homing) {
+        const homingTarget = nearestEnemyFighterTo(pr.x, pr.y, owner);
+        if (homingTarget) {
+          const desired = Math.atan2(
+            homingTarget.y - pr.y,
+            homingTarget.x - pr.x
+          );
+          const cur = Math.atan2(pr.vy, pr.vx);
+          let diff = angleDiff(desired, cur);
+          const maxTurn = MARKSMAN_ULT_HOMING_TURN_RATE * dt;
+          if (diff > maxTurn) diff = maxTurn;
+          else if (diff < -maxTurn) diff = -maxTurn;
+          const newAngle = cur + diff;
+          const sp = len(pr.vx, pr.vy);
+          pr.vx = Math.cos(newAngle) * sp;
+          pr.vy = Math.sin(newAngle) * sp;
+        }
+      }
 
       accelerateProjectile(pr, dt, BOLT_SPEED_ACCEL, BOLT_SPEED_MAX_MUL);
       pr.px = pr.x;
@@ -16320,7 +16440,12 @@
       ctx.moveTo(pr.px, pr.py);
       ctx.lineTo(pr.x, pr.y);
       ctx.stroke();
-      const headR = pr.r * (bounce ? (ultBounce ? 0.95 : 0.65) : 0.55);
+      // The drawn "ball" tracks the hitbox (what actually deals damage),
+      // not pr.r — for an ult bolt those differ (see RICOCHET_ULT_HURT_R),
+      // so the ball stays true to its real damage-dealing radius while the
+      // gold ring below traces the bigger hurtbox it can be shot down on.
+      const coreR = bounce && pr.hitboxR != null ? pr.hitboxR : pr.r;
+      const headR = coreR * (bounce ? (ultBounce ? 0.95 : 0.65) : 0.55);
       const pulse = 1 + 0.12 * Math.sin(spin * 2);
       ctx.translate(pr.x, pr.y);
       ctx.rotate(Math.atan2(pr.y - pr.py, pr.x - pr.px) + (bounce ? spin : 0));
@@ -16355,21 +16480,24 @@
         ctx.stroke();
       }
       if (ultBounce) {
+        // Traces the bolt's actual hurtbox edge (pr.r) exactly — this is
+        // the boundary an enemy attack has to reach to shoot the bolt down.
+        const hurtR = pr.r * pulse;
         const ringPulse = 0.6 + 0.4 * Math.sin(now * 0.015 + i * 1.3);
         ctx.strokeStyle = RICOCHET_ULT_ACCENT_COLOR;
         ctx.lineWidth = 2.2;
         ctx.globalAlpha = 0.55 + 0.35 * ringPulse;
         ctx.setLineDash([3, 4]);
         ctx.beginPath();
-        ctx.arc(0, 0, headR * 1.6 * pulse, 0, Math.PI * 2);
+        ctx.arc(0, 0, hurtR, 0, Math.PI * 2);
         ctx.stroke();
         ctx.setLineDash([]);
         ctx.globalAlpha = 0.9;
         ctx.fillStyle = "#fff";
         for (let s = 0; s < 4; s++) {
           const sa = spin * 1.5 + (s * Math.PI) / 2;
-          const sx = Math.cos(sa) * headR * 1.55;
-          const sy = Math.sin(sa) * headR * 1.55;
+          const sx = Math.cos(sa) * hurtR;
+          const sy = Math.sin(sa) * hurtR;
           ctx.beginPath();
           ctx.arc(sx, sy, 1.4, 0, Math.PI * 2);
           ctx.fill();
@@ -18517,6 +18645,7 @@
       ) {
         separateBossMinionsFromFighters();
       }
+      resolveRicochetUltHitsFromEnemyProjectiles();
       updateProjectiles(dt);
       players.forEach((p) => {
         tickFighterAnim(p, dt);
