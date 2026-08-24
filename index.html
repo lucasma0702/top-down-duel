@@ -1,0 +1,1239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Top-Down Arena</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0a0d14;
+      --panel: #161c2c;
+      --panel-elevated: #1e2638;
+      --text: #eef2fa;
+      --muted: #8b95a8;
+      --p1: #3dd6ff;
+      --p2: #ff6b9d;
+      --p3: #c8f94d;
+      --p4: #c084fc;
+      --p5: #f59e0b;
+      --p6: #22d3ee;
+      --boss: #e85d4c;
+      --accent: #c4f542;
+      --screen-bg: rgba(8, 11, 20, 0.94);
+      --glass-border: rgba(255, 255, 255, 0.1);
+      --glow-accent: rgba(196, 245, 66, 0.35);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      background:
+        radial-gradient(ellipse 100% 60% at 50% -10%, rgba(61, 120, 220, 0.18) 0%, transparent 55%),
+        radial-gradient(ellipse 80% 50% at 80% 100%, rgba(196, 245, 66, 0.06) 0%, transparent 45%),
+        var(--bg);
+      color: var(--text);
+    }
+    h1 {
+      font-size: 1.1rem;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      margin: 0 0 0.75rem;
+      color: var(--muted);
+    }
+    #wrap {
+      position: relative;
+      border-radius: 14px;
+      overflow: hidden;
+      box-shadow:
+        0 0 0 1px rgba(255, 255, 255, 0.08),
+        0 0 60px rgba(50, 90, 180, 0.12),
+        0 28px 56px rgba(0, 0, 0, 0.55);
+    }
+    #wrap::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      border-radius: 14px;
+      box-shadow: inset 0 0 100px rgba(0, 0, 0, 0.35);
+      z-index: 6;
+    }
+    canvas {
+      display: block;
+      background: #080b12;
+      cursor: crosshair;
+    }
+    #hud {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 0;
+      z-index: 10;
+      padding: 12px 14px 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 10px;
+      pointer-events: none;
+      font-size: 10px;
+      background: linear-gradient(
+        180deg,
+        rgba(6, 10, 18, 0.88) 0%,
+        rgba(6, 10, 18, 0.35) 65%,
+        transparent 100%
+      );
+      backdrop-filter: blur(4px);
+    }
+    .bar-wrap {
+      flex: 1;
+      min-width: 0;
+      max-width: 26%;
+    }
+    .bar-wrap.col-p2 .name { text-align: center; }
+    .bar-wrap.col-p3 .name { text-align: center; }
+    .bar-wrap.col-p4 .name { text-align: center; }
+    .bar-wrap.col-boss { text-align: right; }
+    .name {
+      margin-bottom: 4px;
+      font-weight: 600;
+    }
+    .name.p1 { color: var(--p1); }
+    .name.p2 { color: var(--p2); }
+    .name.p3 { color: var(--p3); }
+    .name.p4 { color: var(--p4); }
+    .name.p5 { color: var(--p5); }
+    .name.p6 { color: var(--p6); }
+    .name.boss { color: var(--boss); }
+    .name.base-a { color: var(--p1); }
+    .name.base-b { color: var(--p2); text-align: right; }
+    .bar-bg {
+      height: 9px;
+      border-radius: 5px;
+      background: rgba(0, 0, 0, 0.5);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.45);
+      overflow: hidden;
+    }
+    .bar-fill {
+      height: 100%;
+      border-radius: 4px;
+      transition: width 0.08s ease-out;
+      box-shadow: 0 0 10px currentColor;
+    }
+    .bar-fill.p1 { background: linear-gradient(90deg, #1a8aaa, var(--p1)); }
+    .bar-fill.p2 { background: linear-gradient(90deg, #aa3a6a, var(--p2)); }
+    .bar-fill.p3 { background: linear-gradient(90deg, #6a8a2a, var(--p3)); }
+    .bar-fill.p4 { background: linear-gradient(90deg, #6a4a9a, var(--p4)); }
+    .bar-fill.p5 { background: linear-gradient(90deg, #9a6a1a, var(--p5)); }
+    .bar-fill.p6 { background: linear-gradient(90deg, #1a7a9a, var(--p6)); }
+    .bar-fill.boss { background: linear-gradient(270deg, #aa3a2a, var(--boss)); margin-left: auto; }
+    .bar-fill.base-a { background: linear-gradient(90deg, #1a5a72, var(--p1)); }
+    .bar-fill.base-b { background: linear-gradient(270deg, #aa3a6a, var(--p2)); margin-left: auto; }
+    #help {
+      margin-top: 1rem;
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.6;
+      text-align: center;
+      max-width: 960px;
+      padding: 0 16px;
+    }
+    #help kbd {
+      display: inline-block;
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: var(--panel);
+      border: 1px solid rgba(255,255,255,0.1);
+      font-size: 11px;
+    }
+    body.help-instructions-hidden #help {
+      display: none !important;
+    }
+    #overlay {
+      position: absolute;
+      inset: 0;
+      z-index: 25;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(10,12,18,0.72);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s ease;
+    }
+    #overlay.visible {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    #overlay-inner {
+      text-align: center;
+      padding: 32px 40px;
+      border-radius: 14px;
+      background: linear-gradient(165deg, var(--panel-elevated) 0%, var(--panel) 100%);
+      border: 1px solid var(--glass-border);
+      box-shadow:
+        0 24px 48px rgba(0, 0, 0, 0.5),
+        0 0 40px rgba(196, 245, 66, 0.06);
+    }
+    #overlay-inner h2 {
+      margin: 0 0 8px;
+      font-size: 1.4rem;
+    }
+    #overlay-inner p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    #overlay-inner .accent { color: var(--accent); margin-top: 12px; font-weight: 600; }
+    #hud.mode-versus .boss-bar {
+      display: none !important;
+    }
+    #hud.mode-versus .bar-wrap {
+      max-width: 34%;
+    }
+    #hud.mode-many .bar-wrap {
+      max-width: 22%;
+      font-size: 9px;
+    }
+    #hud.mode-six .bar-wrap {
+      max-width: 15%;
+      font-size: 8px;
+    }
+    #hud.mode-six .name {
+      margin-bottom: 2px;
+    }
+    #hud .bar-wrap.hidden {
+      display: none !important;
+    }
+    #mode-screen {
+      position: absolute;
+      inset: 0;
+      z-index: 40;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 18px;
+      padding: 24px;
+      background:
+        radial-gradient(ellipse 70% 45% at 50% 0%, rgba(70, 110, 200, 0.14), transparent),
+        var(--screen-bg);
+      backdrop-filter: blur(6px);
+      color: var(--text);
+      text-align: center;
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+      transition: opacity 0.2s ease, visibility 0.2s;
+    }
+    #mode-screen.visible {
+      opacity: 1;
+      visibility: visible;
+      pointer-events: auto;
+    }
+    #mode-screen h2 {
+      margin: 0 0 4px;
+      font-size: 1.15rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    #mode-screen p {
+      margin: 0 0 12px;
+      font-size: 12px;
+      color: var(--muted);
+      max-width: 360px;
+      line-height: 1.5;
+    }
+    #mode-screen .mode-buttons {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      justify-content: center;
+    }
+    #mode-screen button {
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 600;
+      padding: 12px 22px;
+      border-radius: 10px;
+      border: 1px solid var(--glass-border);
+      cursor: pointer;
+      color: var(--text);
+      background: linear-gradient(180deg, var(--panel-elevated) 0%, var(--panel) 100%);
+      min-width: 180px;
+      transition: transform 0.12s ease, background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+    #mode-screen button:hover {
+      background: #252b3d;
+      border-color: rgba(255, 255, 255, 0.22);
+      transform: translateY(-1px);
+      box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+    }
+    #mode-screen button.primary {
+      border-color: rgba(196, 245, 66, 0.5);
+      color: var(--accent);
+      box-shadow: 0 0 24px var(--glow-accent);
+    }
+    .roster-count-row {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin: 0 0 4px;
+      flex-shrink: 0;
+    }
+    .roster-count-row label {
+      font-size: 12px;
+      color: var(--muted);
+    }
+    select.roster-select {
+      font-family: inherit;
+      font-size: 13px;
+      padding: 8px 14px;
+      border-radius: 6px;
+      border: 1px solid rgba(255,255,255,0.15);
+      background: var(--panel);
+      color: var(--text);
+      cursor: pointer;
+    }
+    #mode-screen button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+    #mode-screen .mode-screen-tabs {
+      display: flex;
+      gap: 8px;
+      justify-content: center;
+      width: 100%;
+      max-width: 360px;
+      margin-bottom: 2px;
+    }
+    #mode-screen .mode-screen-tab {
+      flex: 1;
+      min-width: 0;
+      max-width: 160px;
+      padding: 9px 14px;
+      border-radius: 10px;
+      border: 1px solid var(--glass-border);
+      background: rgba(0, 0, 0, 0.25);
+      color: var(--muted);
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: border-color 0.15s, color 0.15s, background 0.15s;
+    }
+    #mode-screen .mode-screen-tab.active {
+      border-color: rgba(196, 245, 66, 0.5);
+      color: var(--accent);
+      background: rgba(196, 245, 66, 0.1);
+    }
+    #mode-screen .mode-panel {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 18px;
+      width: 100%;
+    }
+    #mode-screen .mode-panel[hidden] {
+      display: none !important;
+    }
+    #mode-screen .settings-panel {
+      max-width: 360px;
+      width: 100%;
+      text-align: left;
+      max-height: min(62vh, 480px);
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding-right: 6px;
+      scrollbar-gutter: stable;
+    }
+    #mode-screen .settings-panel h2 {
+      text-align: center;
+    }
+    #mode-screen .settings-toggle {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 14px 16px;
+      border-radius: 12px;
+      border: 1px solid var(--glass-border);
+      background: linear-gradient(165deg, var(--panel-elevated) 0%, var(--panel) 100%);
+      cursor: pointer;
+    }
+    #mode-screen .settings-toggle input {
+      width: 18px;
+      height: 18px;
+      margin-top: 2px;
+      flex-shrink: 0;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+    #mode-screen .settings-toggle-text strong {
+      display: block;
+      font-size: 13px;
+      color: var(--text);
+      margin-bottom: 4px;
+    }
+    #mode-screen .settings-toggle-text span {
+      display: block;
+      font-size: 11px;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+    #mode-screen .settings-subgroup {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-left: 30px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid var(--glass-border);
+      background: rgba(0, 0, 0, 0.18);
+    }
+    #mode-screen .settings-subgroup[hidden] {
+      display: none;
+    }
+    #mode-screen .settings-subtoggle {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      font-size: 12px;
+      color: var(--text);
+    }
+    #mode-screen .settings-subtoggle input {
+      width: 15px;
+      height: 15px;
+      flex-shrink: 0;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+    #char-screen {
+      position: absolute;
+      inset: 0;
+      z-index: 45;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-start;
+      gap: 10px;
+      padding: 16px 16px 18px;
+      background:
+        radial-gradient(ellipse 80% 40% at 50% 0%, rgba(196, 245, 66, 0.08), transparent),
+        var(--screen-bg);
+      backdrop-filter: blur(6px);
+      color: var(--text);
+      text-align: center;
+      overflow: hidden;
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+      transition: opacity 0.2s ease, visibility 0.2s;
+    }
+    #char-screen.visible {
+      opacity: 1;
+      visibility: visible;
+      pointer-events: auto;
+    }
+    #char-screen h2 {
+      margin: 0;
+      font-size: 1.15rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--muted);
+      flex-shrink: 0;
+    }
+    #char-screen .char-hint {
+      margin: 0;
+      font-size: 11px;
+      color: var(--muted);
+      max-width: 420px;
+      line-height: 1.5;
+      flex-shrink: 0;
+    }
+    #char-team-hint {
+      width: 100%;
+      max-width: 520px;
+      flex-shrink: 0;
+    }
+    #char-slots {
+      display: flex;
+      flex-direction: row;
+      flex-wrap: nowrap;
+      align-items: flex-start;
+      gap: 12px;
+      width: 100%;
+      max-width: 100%;
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-x: auto;
+      overflow-y: auto;
+      padding: 4px 4px 20px;
+      scrollbar-gutter: stable;
+      -webkit-overflow-scrolling: touch;
+      scroll-snap-type: x proximity;
+    }
+    .char-slot {
+      flex: 0 0 auto;
+      min-width: 360px;
+      max-width: none;
+      scroll-snap-align: start;
+      background: linear-gradient(165deg, var(--panel-elevated) 0%, var(--panel) 100%);
+      border: 1px solid var(--glass-border);
+      border-radius: 12px;
+      padding: 10px 12px;
+      text-align: left;
+      box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35);
+    }
+    .char-slot .slot-title {
+      font-size: 12px;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+    .slot-meta {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .slot-char-badge,
+    .slot-team-badge,
+    .slot-diff-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 4px 9px;
+      border-radius: 6px;
+      background: rgba(0, 0, 0, 0.28);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    .slot-diff-badge {
+      color: #9fd4ff;
+      border-color: rgba(120, 180, 255, 0.28);
+    }
+    .slot-diff-row {
+      margin: 0 0 10px;
+    }
+    .slot-diff-label {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--muted, #9aa3b2);
+    }
+    .slot-diff-select {
+      min-width: 118px;
+    }
+    .slot-swatch {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.2);
+    }
+    .slot-team-badge.team-a {
+      color: var(--p1);
+      border-color: rgba(61, 214, 255, 0.35);
+    }
+    .slot-team-badge.team-b {
+      color: var(--p2);
+      border-color: rgba(255, 107, 157, 0.35);
+    }
+    .slot-team-badge.team-c {
+      color: var(--p4);
+      border-color: rgba(192, 132, 252, 0.35);
+    }
+    .slot-team-badge.team-d {
+      color: var(--p5);
+      border-color: rgba(245, 158, 11, 0.35);
+    }
+    .char-pick-wrap {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      width: 100%;
+    }
+    .char-option-random-top {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 8px 12px;
+      border-color: rgba(196, 245, 66, 0.35);
+      background: rgba(196, 245, 66, 0.06);
+    }
+    .char-option-random-top strong {
+      font-size: 12px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+    .char-option-random-top.selected {
+      border-color: var(--accent);
+      background: rgba(196, 245, 66, 0.14);
+    }
+    .char-options {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 5px;
+      overflow: visible;
+      width: 100%;
+      padding-bottom: 2px;
+    }
+    .char-option {
+      position: relative;
+      min-width: 0;
+      font-family: inherit;
+      font-size: 10px;
+      padding: 6px 4px;
+      border-radius: 7px;
+      border: 2px solid rgba(255, 255, 255, 0.1);
+      background: rgba(0, 0, 0, 0.28);
+      color: var(--text);
+      cursor: pointer;
+      text-align: center;
+      transition: border-color 0.15s, background 0.15s, transform 0.12s ease, box-shadow 0.15s;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 3px;
+    }
+    .char-option-icon {
+      width: 28px;
+      height: 28px;
+      display: block;
+      border-radius: 50%;
+      background: rgba(0, 0, 0, 0.25);
+    }
+    .char-option-random {
+      border-style: dashed;
+    }
+    .char-option-random.selected {
+      border-style: solid;
+    }
+    .char-option:hover {
+      border-color: rgba(255, 255, 255, 0.28);
+      transform: translateY(-1px);
+      box-shadow: 0 6px 16px rgba(0, 0, 0, 0.3);
+    }
+    .char-option.selected {
+      border-color: var(--accent);
+      background: rgba(196, 245, 66, 0.12);
+      box-shadow: 0 0 16px var(--glow-accent);
+    }
+    .char-option strong {
+      display: block;
+      font-size: 10px;
+      margin-bottom: 0;
+      line-height: 1.15;
+    }
+    .char-option span {
+      display: none;
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: calc(100% + 6px);
+      top: auto;
+      min-width: 180px;
+      max-width: 240px;
+      z-index: 20;
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      background: rgba(12, 14, 22, 0.98);
+      color: var(--muted);
+      line-height: 1.4;
+      box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
+      pointer-events: none;
+    }
+    .char-option:hover span,
+    .char-option:focus-visible span {
+      display: block;
+    }
+    @media (hover: none) {
+      .char-option:focus span {
+        display: block;
+      }
+    }
+    .team-roster-hint {
+      width: 100%;
+      margin: 0;
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.5;
+      text-align: center;
+    }
+    .team-roster-hint .team-warn {
+      color: #fbbf24;
+    }
+    .team-pick {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .team-btn {
+      flex: 1;
+      font-family: inherit;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 6px 10px;
+      border-radius: 6px;
+      border: 2px solid rgba(255,255,255,0.12);
+      background: rgba(0,0,0,0.25);
+      color: var(--text);
+      cursor: pointer;
+    }
+    .team-btn.team-a.selected {
+      border-color: var(--p1);
+      background: rgba(61, 214, 255, 0.12);
+    }
+    .team-btn.team-b.selected {
+      border-color: var(--p2);
+      background: rgba(255, 107, 157, 0.12);
+    }
+    .team-btn.team-c.selected {
+      border-color: var(--p4);
+      background: rgba(192, 132, 252, 0.12);
+    }
+    .team-btn.team-d.selected {
+      border-color: var(--p5);
+      background: rgba(245, 158, 11, 0.12);
+    }
+    #char-screen .char-actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content: center;
+      margin-top: 4px;
+      flex-shrink: 0;
+    }
+    #char-screen .char-actions button {
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 600;
+      padding: 11px 20px;
+      border-radius: 10px;
+      border: 1px solid var(--glass-border);
+      cursor: pointer;
+      color: var(--text);
+      background: linear-gradient(180deg, var(--panel-elevated) 0%, var(--panel) 100%);
+      min-width: 120px;
+      transition: transform 0.12s ease, box-shadow 0.15s;
+    }
+    #char-screen .char-actions button:hover {
+      transform: translateY(-1px);
+    }
+    #char-screen .char-actions button.primary {
+      border-color: rgba(196, 245, 66, 0.5);
+      color: var(--accent);
+      box-shadow: 0 0 20px var(--glow-accent);
+    }
+    #map-screen {
+      position: absolute;
+      inset: 0;
+      z-index: 42;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-start;
+      gap: 14px;
+      padding: 20px 18px 16px;
+      background:
+        radial-gradient(ellipse 70% 40% at 50% 0%, rgba(70, 110, 200, 0.12), transparent),
+        var(--screen-bg);
+      backdrop-filter: blur(6px);
+      color: var(--text);
+      text-align: center;
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+      transition: opacity 0.2s ease, visibility 0.2s;
+      overflow-y: auto;
+    }
+    #map-screen.visible {
+      opacity: 1;
+      visibility: visible;
+      pointer-events: auto;
+    }
+    #map-screen h2 {
+      margin: 0;
+      font-size: 1.15rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    #map-screen p {
+      margin: 0;
+      font-size: 12px;
+      color: var(--muted);
+      max-width: 420px;
+      line-height: 1.5;
+    }
+    .map-modifiers-wrap {
+      width: 100%;
+      max-width: 520px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .map-mod-section {
+      text-align: left;
+      background: linear-gradient(165deg, var(--panel-elevated) 0%, var(--panel) 100%);
+      border: 1px solid var(--glass-border);
+      border-radius: 12px;
+      padding: 14px 16px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+    }
+    .map-mod-label {
+      margin: 0 0 10px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .map-shape-row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .map-shape-btn {
+      flex: 1;
+      min-width: 120px;
+      font-family: inherit;
+      text-align: left;
+      padding: 10px 12px;
+      border-radius: 8px;
+      border: 1px solid rgba(255,255,255,0.1);
+      background: rgba(0,0,0,0.2);
+      color: var(--text);
+      cursor: pointer;
+      transition: border-color 0.15s ease, background 0.15s ease;
+    }
+    .map-shape-btn:hover {
+      border-color: rgba(255,255,255,0.22);
+    }
+    .map-shape-btn.selected {
+      border-color: rgba(196, 245, 66, 0.55);
+      background: rgba(196, 245, 66, 0.08);
+    }
+    .map-shape-btn strong {
+      display: block;
+      font-size: 13px;
+      margin-bottom: 3px;
+    }
+    .map-shape-btn span {
+      font-size: 11px;
+      color: var(--muted);
+      line-height: 1.35;
+    }
+    .map-mod-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .map-mod-toggle {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 10px 10px;
+      border-radius: 8px;
+      border: 1px solid rgba(255,255,255,0.06);
+      background: rgba(0,0,0,0.15);
+      cursor: pointer;
+      transition: border-color 0.15s ease, background 0.15s ease;
+    }
+    .map-mod-toggle:hover {
+      border-color: rgba(255,255,255,0.16);
+      background: rgba(0,0,0,0.25);
+    }
+    .map-mod-toggle.on {
+      border-color: rgba(196, 245, 66, 0.45);
+      background: rgba(196, 245, 66, 0.06);
+    }
+    .map-mod-toggle input {
+      margin-top: 3px;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+    .map-mod-toggle-text strong {
+      display: block;
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 2px;
+    }
+    .map-mod-toggle-text span {
+      display: block;
+      font-size: 11px;
+      color: var(--muted);
+      line-height: 1.4;
+    }
+    .map-mod-summary {
+      margin: 10px 0 0;
+      font-size: 11px;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+    #map-screen .map-actions {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    #map-screen .map-actions button {
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 600;
+      padding: 10px 20px;
+      border-radius: 8px;
+      border: 1px solid rgba(255,255,255,0.12);
+      cursor: pointer;
+      color: var(--text);
+      background: var(--panel);
+    }
+    #map-screen .map-actions button.primary {
+      border-color: rgba(196, 245, 66, 0.45);
+      color: var(--accent);
+    }
+    #boss-screen {
+      position: absolute;
+      inset: 0;
+      z-index: 41;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-start;
+      gap: 14px;
+      padding: 20px 18px 16px;
+      background:
+        radial-gradient(ellipse 70% 40% at 50% 0%, rgba(232, 93, 76, 0.1), transparent),
+        var(--screen-bg);
+      backdrop-filter: blur(6px);
+      color: var(--text);
+      text-align: center;
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+      transition: opacity 0.2s ease, visibility 0.2s;
+    }
+    #boss-screen.visible {
+      opacity: 1;
+      visibility: visible;
+      pointer-events: auto;
+    }
+    #boss-screen h2 {
+      margin: 0;
+      font-size: 1.15rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    #boss-screen p {
+      margin: 0;
+      font-size: 12px;
+      color: var(--muted);
+      max-width: 440px;
+      line-height: 1.5;
+    }
+    #boss-choices {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 12px;
+      width: 100%;
+      max-width: 640px;
+      padding: 4px;
+    }
+    .boss-choice {
+      font-family: inherit;
+      text-align: left;
+      padding: 14px 16px;
+      border-radius: 8px;
+      border: 1px solid rgba(255,255,255,0.1);
+      background: var(--panel);
+      color: var(--text);
+      cursor: pointer;
+      transition: border-color 0.15s ease, background 0.15s ease;
+    }
+    .boss-choice:hover {
+      border-color: rgba(255,255,255,0.22);
+      background: #252b3d;
+    }
+    .boss-choice.selected {
+      border-color: rgba(196, 245, 66, 0.55);
+      background: rgba(196, 245, 66, 0.08);
+    }
+    .boss-choice-name {
+      display: block;
+      font-size: 14px;
+      font-weight: 600;
+      margin-bottom: 6px;
+    }
+    .boss-choice-desc {
+      display: block;
+      font-size: 11px;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+    #boss-screen .boss-actions {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    #boss-screen .boss-actions button {
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 600;
+      padding: 10px 20px;
+      border-radius: 8px;
+      border: 1px solid rgba(255,255,255,0.12);
+      cursor: pointer;
+      color: var(--text);
+      background: var(--panel);
+    }
+    #boss-screen .boss-actions button.primary {
+      border-color: rgba(196, 245, 66, 0.45);
+      color: var(--accent);
+    }
+    .gamepad-status {
+      position: fixed;
+      top: 10px;
+      right: 14px;
+      z-index: 60;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      line-height: 1;
+      padding: 6px 12px;
+      border-radius: 999px;
+      background: rgba(20, 24, 34, 0.75);
+      border: 1px solid var(--glass-border);
+      color: var(--muted);
+      pointer-events: none;
+      transition: color 0.2s, border-color 0.2s, background 0.2s;
+    }
+    .gamepad-status .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--muted);
+    }
+    .gamepad-status.connected {
+      color: #6ee7b7;
+      border-color: rgba(110, 231, 183, 0.45);
+      background: rgba(20, 40, 34, 0.75);
+    }
+    .gamepad-status.connected .dot {
+      background: #6ee7b7;
+      box-shadow: 0 0 6px rgba(110, 231, 183, 0.8);
+    }
+  </style>
+</head>
+<body>
+  <h1>Top-Down Arena</h1>
+  <div id="gamepad-status" class="gamepad-status" aria-live="polite">
+    <span class="dot"></span><span id="gamepad-status-text">No controller detected</span>
+  </div>
+  <div id="wrap">
+    <canvas id="game" width="960" height="672" aria-label="Game arena"></canvas>
+    <div id="hud">
+      <div class="bar-wrap hero-bar col-p1" id="hud-hero-0">
+        <div class="name p1" id="hero-label-0">P1</div>
+        <div class="bar-bg"><div class="bar-fill p1" id="hp1" style="width:100%"></div></div>
+      </div>
+      <div class="bar-wrap hero-bar col-p2" id="hud-hero-1">
+        <div class="name p2" id="hero-label-1">P2</div>
+        <div class="bar-bg"><div class="bar-fill p2" id="hp2" style="width:100%"></div></div>
+      </div>
+      <div class="bar-wrap hero-bar col-p3" id="hud-hero-2">
+        <div class="name p3" id="hero-label-2">P3</div>
+        <div class="bar-bg"><div class="bar-fill p3" id="hp3" style="width:100%"></div></div>
+      </div>
+      <div class="bar-wrap hero-bar col-p4" id="hud-hero-3">
+        <div class="name p4" id="hero-label-3">P4</div>
+        <div class="bar-bg"><div class="bar-fill p4" id="hp4" style="width:100%"></div></div>
+      </div>
+      <div class="bar-wrap hero-bar col-p5" id="hud-hero-4">
+        <div class="name p5" id="hero-label-4">P5</div>
+        <div class="bar-bg"><div class="bar-fill p5" id="hp5" style="width:100%"></div></div>
+      </div>
+      <div class="bar-wrap hero-bar col-p6" id="hud-hero-5">
+        <div class="name p6" id="hero-label-5">P6</div>
+        <div class="bar-bg"><div class="bar-fill p6" id="hp6" style="width:100%"></div></div>
+      </div>
+      <div class="bar-wrap col-boss boss-bar" id="hud-boss">
+        <div class="name boss">Boss</div>
+        <div class="bar-bg"><div class="bar-fill boss" id="hpBoss" style="width:100%"></div></div>
+      </div>
+      <div class="bar-wrap col-p1 hidden" id="hud-base-a">
+        <div class="name base-a">Base A</div>
+        <div class="bar-bg"><div class="bar-fill base-a" id="hpBaseA" style="width:100%"></div></div>
+      </div>
+      <div class="bar-wrap col-boss hidden" id="hud-base-b">
+        <div class="name base-b">Base B</div>
+        <div class="bar-bg"><div class="bar-fill base-b" id="hpBaseB" style="width:100%"></div></div>
+      </div>
+    </div>
+    <div id="overlay"><div id="overlay-inner"></div></div>
+    <div id="mode-screen" aria-label="Choose game mode">
+      <div class="mode-screen-tabs" role="tablist" aria-label="Main menu">
+        <button type="button" class="mode-screen-tab active" role="tab" aria-selected="true" data-mode-tab="play" id="mode-tab-play-btn">Play</button>
+        <button type="button" class="mode-screen-tab" role="tab" aria-selected="false" data-mode-tab="settings" id="mode-tab-settings-btn">Settings</button>
+      </div>
+      <div id="mode-panel-play" class="mode-panel" role="tabpanel">
+        <h2>Game mode</h2>
+        <p>Pick how you want to play. <kbd>Esc</kbd> returns to this menu from a fight; <kbd>M</kbd> goes back one setup step.</p>
+        <div class="mode-buttons">
+          <button type="button" id="btn-mode-versus">Versus — free-for-all</button>
+          <button type="button" id="btn-mode-teams">Teams — up to 4 sides</button>
+          <button type="button" class="primary" id="btn-mode-boss">Team vs boss — co-op</button>
+          <button type="button" id="btn-mode-horde">Horde — wave survival</button>
+          <button type="button" id="btn-mode-siege">Siege — long map, two bases</button>
+        </div>
+      </div>
+      <div id="mode-panel-settings" class="mode-panel settings-panel" role="tabpanel" hidden>
+        <h2>Settings</h2>
+        <label class="settings-toggle" for="setting-show-instructions">
+          <input type="checkbox" id="setting-show-instructions" checked />
+          <span class="settings-toggle-text">
+            <strong>Show instructions</strong>
+            <span>Display control hints and tips in the bar below the arena. Turn off for a cleaner view.</span>
+          </span>
+        </label>
+        <label class="settings-toggle" for="setting-character-shine">
+          <input type="checkbox" id="setting-character-shine" />
+          <span class="settings-toggle-text">
+            <strong>Character shine</strong>
+            <span>Glossy highlights and specular dots on fighters. Off uses flat colors.</span>
+          </span>
+        </label>
+        <label class="settings-toggle" for="setting-fighter-hands">
+          <input type="checkbox" id="setting-fighter-hands" checked />
+          <span class="settings-toggle-text">
+            <strong>Fighter hands</strong>
+            <span>Show animated hands, arms, and attack-themed weapons on characters.</span>
+          </span>
+        </label>
+        <label class="settings-toggle" for="setting-name-tags">
+          <input type="checkbox" id="setting-name-tags" checked />
+          <span class="settings-toggle-text">
+            <strong>Name tags</strong>
+            <span>Show labels above fighters. Pick what they include below.</span>
+          </span>
+        </label>
+        <div class="settings-subgroup" id="name-tag-subgroup">
+          <label class="settings-subtoggle" for="setting-nametag-charname">
+            <input type="checkbox" id="setting-nametag-charname" checked />
+            <span>Character name</span>
+          </label>
+          <label class="settings-subtoggle" for="setting-nametag-team">
+            <input type="checkbox" id="setting-nametag-team" checked />
+            <span>Team (Teams/Siege modes)</span>
+          </label>
+          <label class="settings-subtoggle" for="setting-nametag-humanai">
+            <input type="checkbox" id="setting-nametag-humanai" />
+            <span>AI or Human</span>
+          </label>
+          <label class="settings-subtoggle" for="setting-nametag-aidifficulty">
+            <input type="checkbox" id="setting-nametag-aidifficulty" />
+            <span>AI difficulty</span>
+          </label>
+          <label class="settings-subtoggle" for="setting-nametag-playernum">
+            <input type="checkbox" id="setting-nametag-playernum" />
+            <span>Player number (P1, P2, ...)</span>
+          </label>
+        </div>
+        <label class="settings-toggle" for="setting-overhead-hp">
+          <input type="checkbox" id="setting-overhead-hp" />
+          <span class="settings-toggle-text">
+            <strong>Overhead health bars</strong>
+            <span>Show a small HP bar above each fighter.</span>
+          </span>
+        </label>
+        <label class="settings-toggle" for="setting-unique-shapes">
+          <input type="checkbox" id="setting-unique-shapes" checked />
+          <span class="settings-toggle-text">
+            <strong>Unique shapes</strong>
+            <span>Each character uses a distinct silhouette. Off draws everyone as circles.</span>
+          </span>
+        </label>
+        <label class="settings-toggle" for="setting-facing-arrow">
+          <input type="checkbox" id="setting-facing-arrow" checked />
+          <span class="settings-toggle-text">
+            <strong>Facing arrow</strong>
+            <span>Show the arrow that marks which way a fighter is aiming.</span>
+          </span>
+        </label>
+        <label class="settings-toggle" for="setting-mouse-aim">
+          <input type="checkbox" id="setting-mouse-aim" checked />
+          <span class="settings-toggle-text">
+            <strong>Mouse aim (P1)</strong>
+            <span>P1 aims with the mouse while WASD moves, instead of facing the movement direction. Left click attacks, right click uses the ultimate (Space/C still work too). Off restores classic keyboard-only controls. Every connected gamepad (PS4/Xbox-style) automatically controls a slot — the 1st pad drives P2, the 2nd drives P3, and so on: left stick move, right stick aim, R2 attack, L2 ult, Square support.</span>
+          </span>
+        </label>
+      </div>
+    </div>
+    <div id="boss-screen" aria-label="Choose boss">
+      <h2>Boss select</h2>
+      <p>Pick who your team fights. Stats scale with your roster size.</p>
+      <div id="boss-choices"></div>
+      <div class="boss-actions">
+        <button type="button" id="btn-boss-back">Back</button>
+        <button type="button" class="primary" id="btn-boss-continue">Continue</button>
+      </div>
+    </div>
+    <div id="map-screen" aria-label="Arena modifiers">
+      <h2>Arena modifiers</h2>
+      <p>Pick the floor shape and turn hazards on or off. Mix whatever you like.</p>
+      <div id="map-modifiers" class="map-modifiers-wrap"></div>
+      <div class="map-actions">
+        <button type="button" id="btn-map-back">Back</button>
+        <button type="button" class="primary" id="btn-map-continue">Continue</button>
+      </div>
+    </div>
+    <div id="char-screen" aria-label="Choose characters">
+      <h2>Character select</h2>
+      <div class="roster-count-row">
+        <label for="human-count">Humans</label>
+        <select id="human-count" class="roster-select" aria-label="Human players on keyboard"></select>
+        <label for="ai-count">AI</label>
+        <select id="ai-count" class="roster-select" aria-label="AI fighters"></select>
+      </div>
+      <div class="roster-count-row" id="lives-count-row" hidden>
+        <label for="lives-count">Lives each</label>
+        <select id="lives-count" class="roster-select" aria-label="Lives per fighter">
+          <option value="1" selected>1</option>
+          <option value="2">2</option>
+          <option value="3">3</option>
+          <option value="5">5</option>
+          <option value="10">10</option>
+        </select>
+      </div>
+      <p class="char-hint">Set squad size, then pick a fighter for each slot. <strong>Laser</strong>: hold attack — short wind-up, then a rooted beam; damage ramps the longer a foe stays in it; center hits hardest; misses drain HP.</p>
+      <div id="char-team-hint"></div>
+      <div id="char-slots"></div>
+      <div class="char-actions">
+        <button type="button" id="btn-char-back">Back</button>
+        <button type="button" class="primary" id="btn-char-continue">Start fight</button>
+      </div>
+    </div>
+  </div>
+  <p id="help">Choose a mode on the canvas to see controls for that mode.</p>
+  <script src="game.js"></script>
+</body>
+</html>
