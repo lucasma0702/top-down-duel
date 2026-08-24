@@ -359,6 +359,8 @@
   const NOVA_ULT_CHAOS_PULL_MUL = 10;
   /** Chaos Field also cuts all damage Nova takes by this much while active. */
   const NOVA_ULT_CHAOS_DMG_RESIST_MUL = 0.85;
+  /** Nova takes less damage whenever her body overlaps another fighter's. */
+  const NOVA_INSIDE_DMG_RESIST_MUL = 0.85;
   const AURA_RADIUS_MIN = 32;
   const AURA_RADIUS_MAX = 72;
   const AURA_ATTACK_ACTIVE = 0.16;
@@ -416,10 +418,10 @@
   const RICOCHET_ATTACK_COOLDOWN = 0.22;
   const RICOCHET_SHOT_LIFE = 7;
   /** Prism Cascade ult bolt lifetime (before hit resets). */
-  const RICOCHET_ULT_SHOT_LIFE = 14;
+  const RICOCHET_ULT_SHOT_LIFE = 10;
   /** Each enemy hit resets the bolt's lifetime, and the reset target itself
    *  grows by this much every hit — a small step each time, capped so a
-   *  long hit streak stretches it past the base 14s without going wild. */
+   *  long hit streak stretches it past the base 10s without going wild. */
   const RICOCHET_ULT_LIFE_GROWTH_PER_HIT = 2;
   const RICOCHET_ULT_LIFE_CAP = 24;
   const RICOCHET_ULT_SHOT_COUNT = 5;
@@ -430,6 +432,8 @@
    *  physics reflection. Small per bounce; compounds over a bolt's many
    *  bounces into a real (but not overwhelming) homing tendency. */
   const RICOCHET_ULT_BOUNCE_HOMING_TURN = 0.35;
+  /** Accent color that marks a Prism Cascade (ult) bolt apart from a normal shot. */
+  const RICOCHET_ULT_ACCENT_COLOR = "#facc15";
   /** Ricochet bolts accelerate while airborne (px/s²), capped by mul of launch speed. */
   const RICOCHET_SPEED_ACCEL = 120;
   const RICOCHET_SPEED_MAX_MUL = 2.4;
@@ -634,8 +638,8 @@
    *  the target angle at this rate instead of snapping straight to it.
    *  Mouse aim gets its own, slower rate than gamepad aim/keyboard direction
    *  since a mouse can whip the target angle around far more abruptly. */
-  const LASER_ULT_TURN_SPEED = 9;
-  const LASER_ULT_MOUSE_TURN_SPEED = 4.5;
+  const LASER_ULT_TURN_SPEED = 3;
+  const LASER_ULT_MOUSE_TURN_SPEED = 1.5;
   /** Self-drain while hitting off-center (scales with how far from beam core). */
   const LASER_OFF_CENTER_DRAIN_PER_SEC = 4.2;
   const LASER_MOVE_MUL = 0.72;
@@ -707,10 +711,10 @@
       id: "ricochet",
       name: "Ricochet",
       attackStyle: "bounce",
-      maxHp: 86,
+      maxHp: 80,
       moveSpeedMul: 0.98,
       attackDamageMul: 0.94,
-      desc: "99 HP — hold to charge wall-bounce bolts. <strong>Ult</strong>: Prism Cascade — bolt volley.",
+      desc: "92 HP — hold to charge wall-bounce bolts. <strong>Ult</strong>: Prism Cascade — bolt volley.",
       tint: "#38bdf8",
     },
     laser: {
@@ -2422,6 +2426,20 @@
 
   function isNova(p) {
     return p.attackStyle === "nova" || p.characterId === "nova";
+  }
+
+  /** True while `p`'s body is physically overlapping another live fighter's body. */
+  function isOverlappingAnotherFighter(p) {
+    const r = getPlayerRadius(p);
+    for (let i = 0; i < players.length; i++) {
+      const other = players[i];
+      if (!other || other === p || other.hp <= 0 || other.eliminated) continue;
+      const dx = p.x - other.x;
+      const dy = p.y - other.y;
+      const minDist = r + getPlayerRadius(other);
+      if (dx * dx + dy * dy < minDist * minDist) return true;
+    }
+    return false;
   }
 
   function isPhoenix(p) {
@@ -6101,6 +6119,155 @@
     }
   }
 
+  /** Body radius used to test map connectivity — matches the smallest
+   *  fighter hit radius so a gap that fits the tightest fighter counts as
+   *  passable. */
+  const CONNECTIVITY_BODY_R = PLAYER_R * 0.9;
+  const CONNECTIVITY_GRID_STEP = 20;
+
+  function pointBlockedForConnectivity(x, y) {
+    if (!isInsideArena(x, y, CONNECTIVITY_BODY_R)) return true;
+    // Mirror resolvePlayerWall's actual clearance rules exactly: walls use
+    // the (maze-tightened) wallCollisionRadius, obstacles use the full body
+    // radius — using the same (too-generous) radius for both would report
+    // maze corridors as blocked when players can in fact fit through them.
+    if (pointOverlapsAnyWall(x, y, wallCollisionRadius(CONNECTIVITY_BODY_R))) {
+      return true;
+    }
+    const obs = mapRuntime.obstacles;
+    for (let i = 0; i < obs.length; i++) {
+      const o = obs[i];
+      if (len(x - o.x, y - o.y) < o.r + CONNECTIVITY_BODY_R) return true;
+    }
+    return false;
+  }
+
+  /** Flood-fills the arena's open floor (obstacles + maze walls only —
+   *  movers are excluded since they're transient) into 4-connected
+   *  components on a coarse grid. Returns per-cell component ids plus each
+   *  component's cell count, so callers can tell whether the walkable
+   *  space is a single connected blob or split into isolated pockets. */
+  function findMapConnectivityComponents() {
+    const b = rectArenaBounds(0);
+    const step = CONNECTIVITY_GRID_STEP;
+    const cols = Math.max(1, Math.ceil((b.maxX - b.minX) / step));
+    const rows = Math.max(1, Math.ceil((b.maxY - b.minY) / step));
+    const open = new Uint8Array(cols * rows);
+    const comp = new Int32Array(cols * rows).fill(-1);
+    for (let gy = 0; gy < rows; gy++) {
+      for (let gx = 0; gx < cols; gx++) {
+        const x = b.minX + (gx + 0.5) * step;
+        const y = b.minY + (gy + 0.5) * step;
+        open[gy * cols + gx] = pointBlockedForConnectivity(x, y) ? 0 : 1;
+      }
+    }
+    const compSizes = [];
+    const stack = [];
+    for (let start = 0; start < open.length; start++) {
+      if (!open[start] || comp[start] !== -1) continue;
+      const id = compSizes.length;
+      let size = 0;
+      stack.length = 0;
+      stack.push(start);
+      comp[start] = id;
+      while (stack.length) {
+        const idx = stack.pop();
+        size++;
+        const gx = idx % cols;
+        const gy = (idx / cols) | 0;
+        if (gx > 0 && open[idx - 1] && comp[idx - 1] === -1) {
+          comp[idx - 1] = id;
+          stack.push(idx - 1);
+        }
+        if (gx < cols - 1 && open[idx + 1] && comp[idx + 1] === -1) {
+          comp[idx + 1] = id;
+          stack.push(idx + 1);
+        }
+        if (gy > 0 && open[idx - cols] && comp[idx - cols] === -1) {
+          comp[idx - cols] = id;
+          stack.push(idx - cols);
+        }
+        if (gy < rows - 1 && open[idx + cols] && comp[idx + cols] === -1) {
+          comp[idx + cols] = id;
+          stack.push(idx + cols);
+        }
+      }
+      compSizes.push(size);
+    }
+    return { cols, rows, step, b, comp, compSizes };
+  }
+
+  /** Removes whichever placed obstacle (pillar/lattice/ring — never a maze
+   *  wall) sits nearest to the given isolated component's centroid, on the
+   *  theory that it's the piece most likely responsible for walling that
+   *  pocket off. */
+  function removeObstacleNearestComponent(result, targetCompId) {
+    let sx = 0;
+    let sy = 0;
+    let n = 0;
+    for (let idx = 0; idx < result.comp.length; idx++) {
+      if (result.comp[idx] !== targetCompId) continue;
+      const gx = idx % result.cols;
+      const gy = (idx / result.cols) | 0;
+      sx += result.b.minX + (gx + 0.5) * result.step;
+      sy += result.b.minY + (gy + 0.5) * result.step;
+      n++;
+    }
+    if (n === 0 || mapRuntime.obstacles.length === 0) return false;
+    const cx = sx / n;
+    const cy = sy / n;
+    let bestIdx = -1;
+    let bestD = Infinity;
+    for (let i = 0; i < mapRuntime.obstacles.length; i++) {
+      const o = mapRuntime.obstacles[i];
+      const d = len(o.x - cx, o.y - cy);
+      if (d < bestD) {
+        bestD = d;
+        bestIdx = i;
+      }
+    }
+    if (bestIdx === -1) return false;
+    mapRuntime.obstacles.splice(bestIdx, 1);
+    return true;
+  }
+
+  /** Guarantees every open patch of floor can reach every other one.
+   *  Randomized pillars/lattice/ring placement can, by unlucky chance,
+   *  wall a pocket of the arena off entirely — this detects that (via
+   *  flood fill) and strips the obstacle most likely responsible, retrying
+   *  until the floor is a single connected region. Maze walls are never
+   *  touched: the hand-authored layout (and its mirror/rotate variants)
+   *  is connected by construction, so an all-obstacles-removed floor is
+   *  always a safe fallback. */
+  function ensureMapConnectivity() {
+    if (mapRuntime.obstacles.length === 0) return;
+    const MAX_ATTEMPTS = 8;
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      const result = findMapConnectivityComponents();
+      if (result.compSizes.length <= 1) return;
+      let mainId = 0;
+      for (let i = 1; i < result.compSizes.length; i++) {
+        if (result.compSizes[i] > result.compSizes[mainId]) mainId = i;
+      }
+      let smallestId = -1;
+      let smallestSize = Infinity;
+      for (let i = 0; i < result.compSizes.length; i++) {
+        if (i === mainId) continue;
+        if (result.compSizes[i] < smallestSize) {
+          smallestSize = result.compSizes[i];
+          smallestId = i;
+        }
+      }
+      if (smallestId === -1) return;
+      if (!removeObstacleNearestComponent(result, smallestId)) break;
+    }
+    // Still fragmented after every attempt (or ran out of obstacles to
+    // remove) — clear every placed pillar/lattice/ring obstacle. The maze's
+    // own walls (if any) are always connected on their own, so this is a
+    // guaranteed-safe last resort.
+    mapRuntime.obstacles.length = 0;
+  }
+
   function initMapRuntime() {
     const ac = arenaCenter();
     const R = arenaRadius();
@@ -6222,6 +6389,8 @@
     if (m.ring) {
       mapRuntime.obstacles.push({ x: ac.cx, y: ac.cy, r: R * 0.38 });
     }
+
+    ensureMapConnectivity();
 
     if (m.movers) {
       // Randomized axis/position each match instead of a fixed layout.
@@ -13987,6 +14156,9 @@
     if ((defender.novaChaosKnockT || 0) > 0) {
       dmg *= NOVA_ULT_CHAOS_DMG_RESIST_MUL;
     }
+    if (isNova(defender) && isOverlappingAnotherFighter(defender)) {
+      dmg *= NOVA_INSIDE_DMG_RESIST_MUL;
+    }
     if (isPhoenix(defender) && (defender.phoenixReviveBuffT || 0) > 0) {
       dmg *= PHOENIX_REVIVE_SHIELD_DMG_MUL;
     }
@@ -14277,8 +14449,30 @@
     p.vy = 0;
   }
 
+  /** Live aim angle for a human player right now (mouse/gamepad aim, else
+   *  held movement keys), or null if they have no current directional input.
+   *  Used to let Striker's Phantom Rush chain redirect between blinks. */
+  function humanLiveAimAngle(p) {
+    if (p.isBot || p.isAi) return null;
+    if (p.aimOverrideAngle != null) return p.aimOverrideAngle;
+    const c = p.controls;
+    if (!c) return null;
+    let ix = 0;
+    let iy = 0;
+    if (keys[c.left]) ix -= 1;
+    if (keys[c.right]) ix += 1;
+    if (keys[c.up]) iy -= 1;
+    if (keys[c.down]) iy += 1;
+    if (ix !== 0 || iy !== 0) return Math.atan2(iy, ix);
+    return null;
+  }
+
   function startDash(p, ratio) {
     if ((p.ultDashChain || 0) <= 0) p.dashDamageMul = 1;
+    if (isStrikerUltDash(p)) {
+      const redirect = humanLiveAimAngle(p);
+      if (redirect != null) p.facing = redirect;
+    }
     const dist = dashDistForPlayer(p, ratio);
     p.dashDist = dist;
     p.dashTraveled = 0;
@@ -16082,6 +16276,7 @@
     for (let i = 0; i < projectiles.length; i++) {
       const pr = projectiles[i];
       const bounce = pr.kind === "bounce";
+      const ultBounce = bounce && !!pr.ultShot;
       const spread = pr.kind === "spread";
       const nova = pr.kind === "nova";
       const barrage = pr.kind === "barrage";
@@ -16091,7 +16286,9 @@
       ctx.save();
       ctx.lineCap = "round";
       const trailW = bounce
-        ? 5
+        ? ultBounce
+          ? 7.5
+          : 5
         : barrage
           ? 2.4
           : grapple
@@ -16101,11 +16298,13 @@
               : spread || nova
                 ? 3.5
                 : 4;
-      ctx.strokeStyle = pr.color;
+      ctx.strokeStyle = ultBounce ? RICOCHET_ULT_ACCENT_COLOR : pr.color;
       ctx.lineWidth = trailW * 2.8;
       ctx.globalAlpha = nova
         ? 0.12 + 0.1 * (pr.angleMul != null ? pr.angleMul : 0.5)
-        : 0.18;
+        : ultBounce
+          ? 0.3
+          : 0.18;
       ctx.beginPath();
       ctx.moveTo(pr.px, pr.py);
       ctx.lineTo(pr.x, pr.y);
@@ -16121,7 +16320,7 @@
       ctx.moveTo(pr.px, pr.py);
       ctx.lineTo(pr.x, pr.y);
       ctx.stroke();
-      const headR = pr.r * (bounce ? 0.65 : 0.55);
+      const headR = pr.r * (bounce ? (ultBounce ? 0.95 : 0.65) : 0.55);
       const pulse = 1 + 0.12 * Math.sin(spin * 2);
       ctx.translate(pr.x, pr.y);
       ctx.rotate(Math.atan2(pr.y - pr.py, pr.x - pr.px) + (bounce ? spin : 0));
@@ -16154,6 +16353,27 @@
         ctx.beginPath();
         ctx.arc(0, 0, headR * pulse, 0, Math.PI * 2);
         ctx.stroke();
+      }
+      if (ultBounce) {
+        const ringPulse = 0.6 + 0.4 * Math.sin(now * 0.015 + i * 1.3);
+        ctx.strokeStyle = RICOCHET_ULT_ACCENT_COLOR;
+        ctx.lineWidth = 2.2;
+        ctx.globalAlpha = 0.55 + 0.35 * ringPulse;
+        ctx.setLineDash([3, 4]);
+        ctx.beginPath();
+        ctx.arc(0, 0, headR * 1.6 * pulse, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.globalAlpha = 0.9;
+        ctx.fillStyle = "#fff";
+        for (let s = 0; s < 4; s++) {
+          const sa = spin * 1.5 + (s * Math.PI) / 2;
+          const sx = Math.cos(sa) * headR * 1.55;
+          const sy = Math.sin(sa) * headR * 1.55;
+          ctx.beginPath();
+          ctx.arc(sx, sy, 1.4, 0, Math.PI * 2);
+          ctx.fill();
+        }
       }
       ctx.restore();
     }
