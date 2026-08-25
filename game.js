@@ -156,7 +156,7 @@
   const LANCE_DAMAGE_MIN = 10;
   const LANCE_DAMAGE_MAX = 28;
   /** Pike thrust — weaker near, stronger at tip. */
-  const LANCE_CLOSE_DMG_MUL = 0.52;
+  const LANCE_CLOSE_DMG_MUL = 0.35;
   const LANCE_FAR_DMG_MUL = 1.48;
   /** Pike ult — homing spear projectile with its own HP. */
   const LANCE_SPEAR_SPEED = 205;
@@ -252,6 +252,10 @@
    *  currently alive — each stacks independently (linear, not compounding). */
   const ECHO_SUMMON_DMG_RESIST_PER_SUMMON = 0.035;
   const ECHO_SUMMON_HEAL_MUL_PER_SUMMON = 0.25;
+  /** The clones themselves also hit harder and reach farther the more of
+   *  the pack is still alive — same linear-per-summon stacking. */
+  const ECHO_SUMMON_RANGE_PER_SUMMON = 0.08;
+  const ECHO_SUMMON_DAMAGE_PER_SUMMON = 0.1;
   /** Siege mode — long two-base map, oriented top-to-bottom (taller than
    *  the canvas, not wider). Wide enough that the zoomed-out camera's view
    *  width never exceeds it — narrower and the camera would show permanent
@@ -391,6 +395,12 @@
   const NOVA_ULT_CHAOS_DMG_RESIST_MUL = 0.85;
   /** Nova takes less damage whenever her body overlaps another fighter's. */
   const NOVA_INSIDE_DMG_RESIST_MUL = 0.85;
+  /** While Chaos Field is up, Nova's normal attack also pulls whoever it
+   *  hits toward her (it deals no knockback at all outside that window) —
+   *  reinforces the "drag enemies in and stay close" playstyle her ult
+   *  already leans into via the pull-on-knockback-taken effect above. */
+  const NOVA_CHAOS_ATTACK_KNOCK_MUL = 1;
+  const NOVA_CHAOS_ATTACK_REVERSE_KNOCK_MUL = 1.4;
   const AURA_RADIUS_MIN = 32;
   const AURA_RADIUS_MAX = 72;
   const AURA_ATTACK_ACTIVE = 0.16;
@@ -589,6 +599,9 @@
   const HORDE_BOSS_WAVE_INTERMISSION = 5.2;
   const HORDE_BOSS_WAVE_INTERVAL = 25;
   const HORDE_DOWN_BLEED = 14;
+  /** Downed heroes aren't fully helpless — they can still crawl, just at
+   *  this fraction of normal move speed. */
+  const HORDE_DOWNED_CRAWL_SPEED_MUL = 0.16;
   const HORDE_SUPPORT_RANGE = 54;
   const HORDE_HEAL_PER_SEC = 26;
   const HORDE_REVIVE_TIME = 2.6;
@@ -794,7 +807,7 @@
       moveSpeedMul: 0.98,
       attackDamageMul: 1,
       novaRangeMul: 1,
-      desc: "104 HP — directional burst; phases through fighters. <strong>Ult</strong>: Supernova — no damage; curses herself with Chaos Field for 10s, turning any knockback she takes into a powerful pull and cutting all damage she takes by 15%.",
+      desc: "104 HP — directional burst; phases through fighters. <strong>Ult</strong>: Supernova — no damage; curses herself with Chaos Field for 10s, turning any knockback she takes into a powerful pull, cutting all damage she takes by 15%, and making her normal attack pull enemies in instead of dealing no knockback.",
       tint: "#e879f9",
     },
     phoenix: {
@@ -804,7 +817,7 @@
       maxHp: 50,
       moveSpeedMul: 1.02,
       attackDamageMul: 0.9,
-      desc: "58 HP — hop & rear flame bolts. <strong>Ult</strong>: Rebirth — big damage buff + forward narrow bolts; rise once if slain soon after.",
+      desc: "58 HP — back-hop & forward flame bolts. <strong>Ult</strong>: Rebirth — big damage buff + forward dash & narrower bolts; rise once if slain soon after.",
       tint: "#f97316",
     },
     echo: {
@@ -815,7 +828,7 @@
       moveSpeedMul: 1,
       rangedRangeMul: 1.2,
       attackDamageMul: 0.8,
-      desc: "62 HP — medium bolts. Each living clone grants 3.5% damage resist and 25% faster regen. <strong>Ult</strong>: Mirror Pack — six frail cone clones that copy your moves for a short time.",
+      desc: "62 HP — medium bolts. Each living clone grants 3.5% damage resist and 25% faster regen, and makes every clone hit harder and reach farther. <strong>Ult</strong>: Mirror Pack — six frail cone clones that copy your moves for a short time.",
       tint: "#818cf8",
     },
     pike: {
@@ -850,7 +863,7 @@
       rangedRangeMul: 1.2,
       attackDamageMul: 0.94,
       chargeSpeedMul: SIPHON_FAST_CHARGE_MUL,
-      desc: "97 HP — bolts that grow and speed up with charge; every 3rd shot has a 5s reload. <strong>Ult</strong>: Vacuum Rift — phase out (no hitbox), pull foes in, then a shockwave that blasts them out; hit fighters charge 75% slower for 2s.",
+      desc: "97 HP — bolts that grow and speed up with charge; every 3rd shot has a 5s reload. <strong>Ult</strong>: Vacuum Rift — phase out (no hitbox), pull foes in, then a shockwave that blasts them out; hit fighters charge 75% slower for 2s, and for that same 2s your own reload is waived.",
       tint: "#f43f5e",
     },
     marionette: {
@@ -953,7 +966,7 @@
     marksman: 50,
     striker: 46,
     bulwark: 52,
-    ricochet: 48,
+    ricochet: 58,
     laser: 50,
     scatter: 47,
     nova: 48,
@@ -2801,7 +2814,7 @@
     spawnRingBurst(p.x, p.y, p.color, radius * 0.42);
     spawnHitSparks(p.x, p.y, p.color, 14);
     forEachUltimateVictims(p, radius, (t) => {
-      dealUltimateHit(p, t, base * 2.35, { knockMul: 0.14, stunT: 0.85 });
+      dealUltimateHit(p, t, base * 2.35, { knockMul: 0.14, stunT: 1.1 });
     });
     p.ultFlashT = 0.5;
   }
@@ -3821,6 +3834,13 @@
   function fireUltimateSiphon(p) {
     p.siphonUltPullT = SIPHON_ULT_PULL_DURATION;
     p.siphonUltShockPending = true;
+    // Same window as the 75% charge-slow Vacuum Rift lands on its victims:
+    // Siphon's own "every 3rd shot reloads for 5s" restriction is lifted
+    // for that long, so she can freely follow up while they're debuffed.
+    p.siphonReloadWaivedT = SIPHON_ULT_CHARGE_SLOW_DUR;
+    // If she was already sitting mid-reload from her 3rd shot when she cast
+    // this, that wait is cancelled outright rather than left to run down.
+    if (p.cooldown > ATTACK_COOLDOWN) p.cooldown = 0;
     p.siphonPhaseT =
       SIPHON_ULT_PULL_DURATION + SIPHON_ULT_INVULN_PAD;
     p.ultActiveT = Math.max(
@@ -4363,6 +4383,9 @@
     }
     if ((p.siphonShockVfxT || 0) > 0) {
       p.siphonShockVfxT = Math.max(0, p.siphonShockVfxT - dt);
+    }
+    if ((p.siphonReloadWaivedT || 0) > 0) {
+      p.siphonReloadWaivedT = Math.max(0, p.siphonReloadWaivedT - dt);
     }
     tickSiphonUltimate(p, dt);
     if ((p.marionetteUltWindupT || 0) > 0) {
@@ -8543,6 +8566,7 @@
       siphonShockX: 0,
       siphonShockY: 0,
       siphonShotCount: 0,
+      siphonReloadWaivedT: 0,
       chargeSlowT: 0,
       chargeSlowMul: 1,
       ultDashChain: 0,
@@ -9155,7 +9179,13 @@
 
   function applyEchoSummonConeHits(s, owner) {
     if ((s.attackT || 0) <= 0 || !owner) return;
-    const range = echoSummonRangeForRatio(s.lastSwingChargeRatio);
+    // The whole pack hits harder and farther the more of it is still
+    // alive — a bigger swarm is a scarier swarm, not just a wider one.
+    const packCount = aliveEchoSummonCountFor(owner.playerNum);
+    const rangeMul = 1 + ECHO_SUMMON_RANGE_PER_SUMMON * packCount;
+    const dmgMul = 1 + ECHO_SUMMON_DAMAGE_PER_SUMMON * packCount;
+    const range = echoSummonRangeForRatio(s.lastSwingChargeRatio) * rangeMul;
+    const dmg = ECHO_SUMMON_DAMAGE * dmgMul;
     const swingKey =
       owner.playerNum + ":echo:" + s.id + ":" + s.swingId;
     for (let i = 0; i < players.length; i++) {
@@ -9171,7 +9201,7 @@
         if (ad > ECHO_SUMMON_ARC * 0.5) continue;
       }
       t.lastHitSwingKey = swingKey;
-      applyDamageTo(t, owner, ECHO_SUMMON_DAMAGE, {
+      applyDamageTo(t, owner, dmg, {
         hitFlash: 0.14,
         swingKey: swingKey,
         knockFrom: s,
@@ -9193,7 +9223,7 @@
           if (ad > ECHO_SUMMON_ARC * 0.5) continue;
         }
         e.lastHitSwingKey = swingKey;
-        damageWaveEnemy(e, ECHO_SUMMON_DAMAGE, s);
+        damageWaveEnemy(e, dmg, s);
       }
       if (hordeBossWaveActive()) {
         const boss = getHordeBossPlayer();
@@ -9209,7 +9239,7 @@
                   : 0;
               if (ad <= ECHO_SUMMON_ARC * 0.5) {
                 boss.lastHitSwingKey = swingKey;
-                applyDamageTo(boss, owner, ECHO_SUMMON_DAMAGE, {
+                applyDamageTo(boss, owner, dmg, {
                   hitFlash: 0.14,
                   swingKey: swingKey,
                   knockFrom: s,
@@ -9236,7 +9266,7 @@
           if (ad > ECHO_SUMMON_ARC * 0.5) continue;
         }
         c.lastHitSwingKey = swingKey;
-        damageCreature(c, ECHO_SUMMON_DAMAGE, s);
+        damageCreature(c, dmg, s);
       }
       removeDeadCreatures();
     }
@@ -9255,7 +9285,7 @@
           if (ad > ECHO_SUMMON_ARC * 0.5) continue;
         }
         m.lastHitSwingKey = swingKey;
-        damageBossMinion(m, ECHO_SUMMON_DAMAGE, s);
+        damageBossMinion(m, dmg, s);
       }
     }
   }
@@ -11747,7 +11777,7 @@
         party +
         " fighters</strong> — more enemies, tougher stats). Every <strong>" +
         HORDE_BOSS_WAVE_INTERVAL +
-        " waves</strong>, a random boss appears (Colossus, Reaver, or Hexwright) instead of the horde — boss power scales with wave and roster. Varied types: melee, spitters, chargers, slammers. Downed allies bleed out; hold support to <strong>heal</strong> or <strong>revive</strong>." +
+        " waves</strong>, a random boss appears (Colossus, Reaver, or Hexwright) instead of the horde — boss power scales with wave and roster. Varied types: melee, spitters, chargers, slammers. Downed allies bleed out and can still crawl (slowly); hold support to <strong>heal</strong> or <strong>revive</strong>." +
         rosterHint +
         soloWarn +
         "<br /><strong>P1</strong>: move <kbd>WASD</kbd> · attack <kbd>Space</kbd> · ult <kbd>C</kbd> · support <kbd>B</kbd> · " +
@@ -12035,9 +12065,23 @@
       return;
     }
     if (gameMode === "horde" && isHordeHeroDowned(p)) {
-      p.vx = 0;
-      p.vy = 0;
       p.hitFlash = Math.max(0, p.hitFlash - dt);
+      // Downed isn't fully helpless — crawl toward safety or a reviving
+      // ally, just at a fraction of normal speed. AI/bots stay put (no
+      // downed-specific pathing for them yet).
+      if (!p.isBot && !p.isAi) {
+        const c = p.controls;
+        let ix = 0;
+        let iy = 0;
+        if (keys[c.left]) ix -= 1;
+        if (keys[c.right]) ix += 1;
+        if (keys[c.up]) iy -= 1;
+        if (keys[c.down]) iy += 1;
+        applyMovementFromAxes(p, ix, iy, dt, HORDE_DOWNED_CRAWL_SPEED_MUL);
+      } else {
+        p.vx = 0;
+        p.vy = 0;
+      }
       return;
     }
     if ((p.respawnT || 0) > 0) {
@@ -13215,10 +13259,9 @@
         (forward ? 0.07 : 0.16) *
         skill.aimSpreadMul;
     }
-    // Normal: back to foe (rear bolts). Ult: face foe (forward bolts).
-    p.facing = forward
-      ? toEnemy + (p.aiAimError || 0)
-      : toEnemy + Math.PI + (p.aiAimError || 0);
+    // Both normal and ult bolts fire forward now, so both face the foe —
+    // normal just skips the ult's velocity-lead prediction above.
+    p.facing = toEnemy + (p.aiAimError || 0);
   }
 
   function allyAiMovePhoenix(p, best, dist, ix, iy) {
@@ -14503,6 +14546,19 @@
     ) {
       defender.stunT = Math.max(defender.stunT || 0, opts.stunT);
     }
+    if (dealt > 0 && isRicochet(defender)) {
+      // Any hit landed on Ricochet also lands on their own Prism Cascade
+      // bolt(s) out on the field right now, for the same damage — as if
+      // the attack had clipped the bolt directly.
+      const bolts = activeRicochetUltBoltsFor(defender.playerNum);
+      for (let bi = 0; bi < bolts.length; bi++) {
+        applyRicochetUltBoltHit(
+          bolts[bi],
+          dealt,
+          (attacker && attacker.color) || defender.color
+        );
+      }
+    }
     const bulwarkWasCharging = isBulwark(defender) && defender.chargeT > 0;
     if (bulwarkWasCharging && dealt > 0) {
       applyBulwarkHitChargePenalty(defender, dealt);
@@ -14611,12 +14667,19 @@
     } else if (p.attackStyle === "lance") {
       p.cooldown = LANCE_ATTACK_COOLDOWN;
     } else if (isSiphon(p) && !opts.skipCooldown) {
-      p.siphonShotCount = (p.siphonShotCount || 0) + 1;
-      if (p.siphonShotCount >= SIPHON_RELOAD_EVERY) {
-        p.siphonShotCount = 0;
-        p.cooldown = SIPHON_ATTACK_COOLDOWN;
-      } else {
+      if ((p.siphonReloadWaivedT || 0) > 0) {
+        // Shots fired during the post-ult waiver don't count toward (or
+        // trigger) the reload at all — they just resume counting once it
+        // expires, no banked reload waiting on the other side.
         p.cooldown = ATTACK_COOLDOWN;
+      } else {
+        p.siphonShotCount = (p.siphonShotCount || 0) + 1;
+        if (p.siphonShotCount >= SIPHON_RELOAD_EVERY) {
+          p.siphonShotCount = 0;
+          p.cooldown = SIPHON_ATTACK_COOLDOWN;
+        } else {
+          p.cooldown = ATTACK_COOLDOWN;
+        }
       }
     } else if (
       p.attackStyle !== "dash" &&
@@ -14726,8 +14789,12 @@
     p.dashSpeed =
       PHOENIX_DASH_SPEED_MIN +
       (PHOENIX_DASH_SPEED_MAX - PHOENIX_DASH_SPEED_MIN) * ratio;
-    let dirX = Math.cos(p.facing);
-    let dirY = Math.sin(p.facing);
+    // Ult (Rebirth) keeps dashing forward, unchanged; the normal hop now
+    // dashes backward to match its shots firing forward instead of behind.
+    const dashForward = phoenixUltAttackActive(p);
+    const dashAngle = dashForward ? p.facing : p.facing + Math.PI;
+    let dirX = Math.cos(dashAngle);
+    let dirY = Math.sin(dashAngle);
     if ((p.isAi || p.isBot) && mapHasNavigationObstacles()) {
       const dashGoalX = p.x + dirX * Math.max(dist, 80);
       const dashGoalY = p.y + dirY * Math.max(dist, 80);
@@ -14818,6 +14885,12 @@
 
   function updateDash(p, dt) {
     if (p.dashT <= 0) return;
+
+    if (isPhoenix(p)) {
+      // Face the way they're actually moving for the whole hop, not the
+      // aim direction the shots already locked in at the start.
+      p.facing = Math.atan2(p.dashDirY, p.dashDirX);
+    }
 
     const remain = p.dashDist - p.dashTraveled;
     const step = Math.min(p.dashSpeed * dt, remain);
@@ -15065,6 +15138,9 @@
     const ox = p.x + Math.cos(facing) * (getPlayerRadius(p) + 6);
     const oy = p.y + Math.sin(facing) * (getPlayerRadius(p) + 6);
     const step = (Math.PI * 2) / NOVA_PELLET_COUNT;
+    // Chaos Field: normal bolts otherwise deal damage only (no knockback),
+    // but while the ult is up they also pull whoever they hit toward Nova.
+    const chaosActive = (p.novaChaosKnockT || 0) > 0;
     for (let i = 0; i < NOVA_PELLET_COUNT; i++) {
       const pelletAng = facing + i * step;
       const angleMul = novaPelletAngleMul(i);
@@ -15088,8 +15164,9 @@
         ownerNum: p.playerNum,
         swingId: p.swingId,
         baseDamage: p.swingDamage,
-        // Normal Nova bolts deal damage only, no knockback.
-        knockMul: 0,
+        knockMul: chaosActive ? NOVA_CHAOS_ATTACK_KNOCK_MUL : 0,
+        reverseKnock: chaosActive,
+        reverseKnockMul: chaosActive ? NOVA_CHAOS_ATTACK_REVERSE_KNOCK_MUL : undefined,
         maxDist: maxDist,
         traveled: 0,
         r: NOVA_HIT_R,
@@ -15107,9 +15184,12 @@
     const maxDist = PHOENIX_SHOT_RANGE;
     const forward = phoenixUltAttackActive(p);
     const spread = forward ? PHOENIX_SHOT_SPREAD_ULT : PHOENIX_SHOT_SPREAD;
-    const baseAng = forward ? p.facing : p.facing + Math.PI;
-    const ox = p.x + (forward ? Math.cos(p.facing) * 8 : 0);
-    const oy = p.y + (forward ? Math.sin(p.facing) * 8 : 0);
+    // Both the normal hop and the ult now fire forward (the normal hop's
+    // dash flipped to backward instead — see startPhoenixAttack); only the
+    // spread cone still differs between the two.
+    const baseAng = p.facing;
+    const ox = p.x + Math.cos(p.facing) * 8;
+    const oy = p.y + Math.sin(p.facing) * 8;
     for (let i = 0; i < 2; i++) {
       const off = i === 0 ? -spread : spread;
       const flyAng = baseAng + off;
@@ -15356,7 +15436,7 @@
       const rv = reflectVelocity(pr.vx, pr.vy, nx, ny);
       const rsp = len(rv.vx, rv.vy);
       if (rsp > 1e-3) {
-        const keep = Math.max(
+        const target = Math.max(
           projectileTargetSpeed(
             pr,
             RICOCHET_SPEED_ACCEL,
@@ -15364,6 +15444,11 @@
           ),
           RICOCHET_SHOT_SPEED * 0.94
         );
+        // Prism Cascade builds its speed permanently from wall bounces
+        // (bounceShotOffWalls), not the normal age-based ramp `target`
+        // tracks — so a fighter bounce must never cap that accumulated
+        // speed back down to baseline.
+        const keep = pr.ultShot ? Math.max(rsp, target) : target;
         pr.vx = (rv.vx / rsp) * keep;
         pr.vy = (rv.vy / rsp) * keep;
       } else {
@@ -15720,6 +15805,40 @@
     }
   }
 
+  /** Shared "the ult bolt just got hit for `incomingDmg`" effect: eats into
+   *  the damage it deals on its future fighter hits and slows it down,
+   *  scaled the same way, down to a floor so it never fully stops. Used
+   *  both when an enemy projectile physically connects with the bolt, and
+   *  (see applyDamageTo) whenever Ricochet themself takes damage while
+   *  their bolt is out — the same attack counts as hitting both. */
+  function applyRicochetUltBoltHit(pr, incomingDmg, sparkColor) {
+    if (incomingDmg <= 0) return;
+    pr.ultDamageLoss = (pr.ultDamageLoss || 0) + incomingDmg;
+
+    const speedMulBefore = pr.ultSpeedMul != null ? pr.ultSpeedMul : 1;
+    const speedMulAfter = Math.max(
+      RICOCHET_ULT_MIN_SPEED_MUL,
+      speedMulBefore - incomingDmg / RICOCHET_ULT_SPEED_DAMAGE_REF
+    );
+    const slowScale = speedMulBefore > 1e-6 ? speedMulAfter / speedMulBefore : 1;
+    pr.vx *= slowScale;
+    pr.vy *= slowScale;
+    pr.ultSpeedMul = speedMulAfter;
+
+    spawnHitSparks(pr.x, pr.y, sparkColor || "#fff", 4);
+  }
+
+  /** Every active Prism Cascade bolt Ricochet currently has out, for
+   *  applyDamageTo to hit alongside them. */
+  function activeRicochetUltBoltsFor(ownerNum) {
+    const out = [];
+    for (let i = 0; i < projectiles.length; i++) {
+      const pr = projectiles[i];
+      if (pr.ultShot && pr.ownerNum === ownerNum) out.push(pr);
+    }
+    return out;
+  }
+
   /** Prism Cascade bolts can get shot down mid-flight: any other player's
    *  projectile that connects with an ult bolt permanently eats into the
    *  damage that bolt deals on its future fighter hits (by however much
@@ -15742,20 +15861,8 @@
         if (!otherOwner || !fightersCanDamage(otherOwner, owner)) continue;
         const hitR = (pr.r || RICOCHET_HIT_R) + (other.r || 6);
         if (len(pr.x - other.x, pr.y - other.y) > hitR) continue;
-        const incomingDmg = projectileBoltDamage(other, pr) || 0;
-        pr.ultDamageLoss = (pr.ultDamageLoss || 0) + Math.max(0, incomingDmg);
-
-        const speedMulBefore = pr.ultSpeedMul != null ? pr.ultSpeedMul : 1;
-        const speedMulAfter = Math.max(
-          RICOCHET_ULT_MIN_SPEED_MUL,
-          speedMulBefore - Math.max(0, incomingDmg) / RICOCHET_ULT_SPEED_DAMAGE_REF
-        );
-        const slowScale = speedMulBefore > 1e-6 ? speedMulAfter / speedMulBefore : 1;
-        pr.vx *= slowScale;
-        pr.vy *= slowScale;
-        pr.ultSpeedMul = speedMulAfter;
-
-        spawnHitSparks(pr.x, pr.y, other.color || "#fff", 4);
+        const incomingDmg = Math.max(0, projectileBoltDamage(other, pr) || 0);
+        applyRicochetUltBoltHit(pr, incomingDmg, other.color);
         projectiles.splice(k, 1);
         if (k < i) i--;
         break;
@@ -16685,11 +16792,15 @@
       const grapple = pr.kind === "grapple";
       const siphon = pr.kind === "siphon";
       const spin = now * 0.012 + i * 1.7;
+      // Ult bolt's trail thins and dims as its remaining lifetime runs out,
+      // so its danger visibly fades instead of vanishing without warning.
+      const ultLifeFrac =
+        ultBounce && pr.maxLife > 1e-6 ? clamp(pr.life / pr.maxLife, 0, 1) : 1;
       ctx.save();
       ctx.lineCap = "round";
       const trailW = bounce
         ? ultBounce
-          ? 7.5
+          ? 7.5 * (0.35 + 0.65 * ultLifeFrac)
           : 5
         : barrage
           ? 2.4
@@ -16705,7 +16816,7 @@
       ctx.globalAlpha = nova
         ? 0.12 + 0.1 * (pr.angleMul != null ? pr.angleMul : 0.5)
         : ultBounce
-          ? 0.3
+          ? 0.3 * (0.3 + 0.7 * ultLifeFrac)
           : 0.18;
       ctx.beginPath();
       ctx.moveTo(pr.px, pr.py);
@@ -16715,9 +16826,11 @@
       ctx.lineWidth = trailW;
       ctx.globalAlpha = nova
         ? 0.45 + 0.5 * (pr.angleMul != null ? pr.angleMul : 0.5)
-        : bounce
-          ? 0.95
-          : 0.9;
+        : ultBounce
+          ? 0.95 * (0.3 + 0.7 * ultLifeFrac)
+          : bounce
+            ? 0.95
+            : 0.9;
       ctx.beginPath();
       ctx.moveTo(pr.px, pr.py);
       ctx.lineTo(pr.x, pr.y);
@@ -17249,22 +17362,26 @@
       ctx.setLineDash([3, 5]);
       for (let si = 0; si < 2; si++) {
         const off = si === 0 ? -spread : spread;
-        const dir = forward ? 1 : -1;
+        // Shots always fire forward now, ult or not — only the spread
+        // cone width still differs (handled via `spread` above).
         ctx.beginPath();
         ctx.moveTo(0, 0);
-        ctx.lineTo(dir * shotR * Math.cos(off), shotR * Math.sin(off));
+        ctx.lineTo(shotR * Math.cos(off), shotR * Math.sin(off));
         ctx.stroke();
       }
       ctx.setLineDash([]);
       ctx.globalAlpha = 0.35 + 0.35 * ratio;
       ctx.strokeStyle = p.color;
+      // The hop itself still flips: forward during the ult buff (unchanged),
+      // backward otherwise, matching startPhoenixAttack's dash direction.
+      const hopDir = forward ? 1 : -1;
       ctx.beginPath();
-      ctx.moveTo(PLAYER_R * 0.25, 0);
-      ctx.lineTo(hop, 0);
+      ctx.moveTo(hopDir * PLAYER_R * 0.25, 0);
+      ctx.lineTo(hopDir * hop, 0);
       ctx.stroke();
       const dotR = 3 + ratio;
       ctx.beginPath();
-      ctx.arc(hop, 0, dotR, 0, Math.PI * 2);
+      ctx.arc(hopDir * hop, 0, dotR, 0, Math.PI * 2);
       ctx.fillStyle = "#fb923c";
       ctx.globalAlpha = 0.5 + 0.35 * ratio;
       ctx.fill();
@@ -17372,6 +17489,8 @@
     ctx.globalAlpha = 0.4 + 0.45 * (1 - t);
     ctx.strokeStyle = "#fdba74";
     ctx.lineWidth = 2.5;
+    // p.facing is now kept pinned to the dash direction for the whole hop
+    // (see updateDash), so the trail just draws straight ahead locally.
     for (let wi = 0; wi < 2; wi++) {
       const side = wi === 0 ? 1 : -1;
       ctx.beginPath();
