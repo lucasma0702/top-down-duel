@@ -220,13 +220,20 @@
   const RANGED_SPEED = 395;
   const RANGED_MAX_DIST = 210;
   /** Deadeye Lock — Marksman's ult: one big homing shot instead of a
-   *  pellet volley. Deals flat damage (no distance falloff) on hit. */
+   *  pellet volley. Deals flat damage (no distance falloff) on hit, and
+   *  that damage ramps the longer it's been flying and with every fighter
+   *  it's already pierced through — see MARKSMAN_ULT_TIME_GROWTH_PER_SEC
+   *  and MARKSMAN_ULT_PIERCE_GROWTH. */
   const MARKSMAN_ULT_DAMAGE_MUL = 3.2;
   const MARKSMAN_ULT_SPEED = 340;
   const MARKSMAN_ULT_HIT_R = 30;
   const MARKSMAN_ULT_MAX_DIST = 900;
   /** How fast (rad/s) the shot can curve toward its target while homing. */
   const MARKSMAN_ULT_HOMING_TURN_RATE = 2.2;
+  /** Fraction of base damage added per second the shot has been alive. */
+  const MARKSMAN_ULT_TIME_GROWTH_PER_SEC = 0.55;
+  /** Fraction of base damage added per fighter already pierced. */
+  const MARKSMAN_ULT_PIERCE_GROWTH = 0.5;
   /** Echo summons — short cone copies that mirror the summoner's moves. */
   const ECHO_SUMMON_COUNT = 6;
   const ECHO_SUMMON_HP = 14;
@@ -241,6 +248,10 @@
   const ECHO_SUMMON_ATTACK_ACTIVE = 0.15;
   /** Mirror Pack clones expire after this many seconds (even if not slain). */
   const ECHO_SUMMON_DURATION = 20;
+  /** Echo gets tankier and heals faster for every Mirror Pack clone
+   *  currently alive — each stacks independently (linear, not compounding). */
+  const ECHO_SUMMON_DMG_RESIST_PER_SUMMON = 0.035;
+  const ECHO_SUMMON_HEAL_MUL_PER_SUMMON = 0.25;
   /** Siege mode — long two-base map, oriented top-to-bottom (taller than
    *  the canvas, not wider). Wide enough that the zoomed-out camera's view
    *  width never exceeds it — narrower and the camera would show permanent
@@ -441,6 +452,15 @@
    *  its hitbox, so it's an easier bolt to shoot down than it is to be hit
    *  by. Also drives its (correspondingly bigger) on-screen size. */
   const RICOCHET_ULT_HURT_R = 50;
+  /** Damage-to-slowdown conversion for an ult bolt getting shot: a hit
+   *  dealing this much damage would (on its own) cut the bolt's current
+   *  speed all the way to RICOCHET_ULT_MIN_SPEED_MUL. Losses stack across
+   *  repeated hits but never push the bolt below that floor. */
+  const RICOCHET_ULT_SPEED_DAMAGE_REF = 150;
+  const RICOCHET_ULT_MIN_SPEED_MUL = 0.2;
+  /** Prism Cascade permanently gains this much speed (px/s) on every wall
+   *  (or obstacle / arena boundary) bounce. */
+  const RICOCHET_ULT_WALL_BOUNCE_SPEED_GAIN = 1;
   const RICOCHET_ATTACK_COOLDOWN = 0.22;
   const RICOCHET_SHOT_LIFE = 7;
   /** Prism Cascade ult bolt lifetime (before hit resets). */
@@ -710,7 +730,7 @@
       moveSpeedMul: 0.98,
       rangedRangeMul: 1.86,
       attackDamageMul: 0.94,
-      desc: "94 HP — long-range bolts. <strong>Ult</strong>: Deadeye Lock — one huge homing shot, heavy damage.",
+      desc: "94 HP — long-range bolts. <strong>Ult</strong>: Deadeye Lock — huge piercing homing shot; damage ramps the longer it flies and with every fighter it pierces.",
       tint: "#a78bfa",
     },
     striker: {
@@ -795,7 +815,7 @@
       moveSpeedMul: 1,
       rangedRangeMul: 1.2,
       attackDamageMul: 0.8,
-      desc: "62 HP — medium bolts. <strong>Ult</strong>: Mirror Pack — six frail cone clones that copy your moves for a short time.",
+      desc: "62 HP — medium bolts. Each living clone grants 3.5% damage resist and 25% faster regen. <strong>Ult</strong>: Mirror Pack — six frail cone clones that copy your moves for a short time.",
       tint: "#818cf8",
     },
     pike: {
@@ -2098,6 +2118,24 @@
   // Mouse-aim (P1) buttons: left click = attack, right click = ultimate.
   let mouseButtonState = { left: false, right: false };
 
+  // Touch controls (P1 only): left-half drag = virtual movement stick,
+  // right-half drag = aim + fire, dedicated button = ultimate. Each zone
+  // tracks its own touch by identifier so both can be held at once.
+  const TOUCH_MOVE_DEADZONE = 10;
+  const TOUCH_AIM_DEADZONE = 10;
+  const TOUCH_JOYSTICK_MAX_R = 60;
+  let touchControlsActive = false;
+  let touchMoveId = null;
+  let touchMoveOriginX = 0;
+  let touchMoveOriginY = 0;
+  let touchMoveDX = 0;
+  let touchMoveDY = 0;
+  let touchAimId = null;
+  let touchAimOriginX = 0;
+  let touchAimOriginY = 0;
+  let touchAimAngleLive = null;
+  let touchUltHeld = false;
+
   let modePickerOpen = true;
   let mapPickerOpen = false;
   let bossPickerOpen = false;
@@ -2486,6 +2524,24 @@
     return p && p.characterId === "siphon";
   }
 
+  /** Echo shares attackStyle "ranged" with Marksman, so identity has to go
+   *  by characterId alone. */
+  function isEcho(p) {
+    return !!p && p.characterId === "echo";
+  }
+
+  /** How many of `p`'s Mirror Pack summons are currently alive — they orbit
+   *  right next to their owner for their whole lifetime, so "alive" and
+   *  "around them" are the same thing here. */
+  function aliveEchoSummonCountFor(playerNum) {
+    const list = mapRuntime.echoSummons;
+    let count = 0;
+    for (let i = 0; i < list.length; i++) {
+      if (list[i].ownerNum === playerNum) count++;
+    }
+    return count;
+  }
+
   function isMarionette(p) {
     return p && p.characterId === "marionette";
   }
@@ -2786,6 +2842,8 @@
       color: p.color,
       ultShot: true,
       homing: true,
+      pierce: true,
+      pierceCount: 0,
     });
     p.ultFlashT = 0.35;
   }
@@ -4848,9 +4906,14 @@
 
   function tickUniversalRegen(p, dt) {
     if (p.isBot || p.hp <= 0 || p.eliminated || gameOver) return;
+    let regenMul = 1;
+    if (isEcho(p)) {
+      const summonCount = aliveEchoSummonCountFor(p.playerNum);
+      regenMul = 1 + ECHO_SUMMON_HEAL_MUL_PER_SUMMON * summonCount;
+    }
     p.hp = Math.min(
       p.maxHp,
-      p.hp + scaleHeal(p.maxHp * UNIVERSAL_REGEN_PCT_PER_SEC * dt)
+      p.hp + scaleHeal(p.maxHp * UNIVERSAL_REGEN_PCT_PER_SEC * regenMul * dt)
     );
   }
 
@@ -5200,27 +5263,30 @@
   }
 
   /**
-   * Recompute each human player's aim-override angle (mouse for P1, right
-   * stick for any gamepad-driven slot) once per frame, before steerPlayer
-   * runs. Bots/AI and any player without an active aim device fall back to
-   * the pre-existing movement-direction facing inside applyMovementFromAxes.
+   * Recompute each human player's aim-override angle (touch or mouse for
+   * P1, right stick for any gamepad-driven slot) once per frame, before
+   * steerPlayer runs. Bots/AI and any player without an active aim device
+   * fall back to the pre-existing movement-direction facing inside
+   * applyMovementFromAxes.
    */
   function updateAimOverrides() {
     for (let i = 0; i < players.length; i++) {
       const p = players[i];
       if (p.isBot || p.isAi) continue;
-      if (
-        p.controls === HUMAN_PRESETS[0].controls &&
-        useMouseAimP1 &&
-        gameMode !== "siege"
-      ) {
-        const m = mouseWorldPos();
-        if (m) {
-          const dx = m.x - p.x;
-          const dy = m.y - p.y;
-          if (dx * dx + dy * dy > 4) p.aimOverrideAngle = Math.atan2(dy, dx);
+      if (p.controls === HUMAN_PRESETS[0].controls) {
+        if (touchAimId != null && touchAimAngleLive != null) {
+          p.aimOverrideAngle = touchAimAngleLive;
+          continue;
         }
-        continue;
+        if (useMouseAimP1 && gameMode !== "siege") {
+          const m = mouseWorldPos();
+          if (m) {
+            const dx = m.x - p.x;
+            const dy = m.y - p.y;
+            if (dx * dx + dy * dy > 4) p.aimOverrideAngle = Math.atan2(dy, dx);
+          }
+          continue;
+        }
       }
       let handledByGamepad = false;
       for (let slot = 1; slot < HUMAN_PRESETS.length; slot++) {
@@ -5385,6 +5451,173 @@
     mouseButtonState.left = false;
     mouseButtonState.right = false;
   });
+
+  // Touch controls (P1 only). Movement and aim are virtual joysticks: the
+  // knob appears wherever the finger first lands and tracks the drag from
+  // there, capped to TOUCH_JOYSTICK_MAX_R. The ultimate button is a plain
+  // tap target. See syncTouchKeys() for how this feeds into `keys`, and
+  // updateAimOverrides() for how the aim drag becomes facing.
+  const touchControlsEl = document.getElementById("touch-controls");
+  const touchMoveZoneEl = document.getElementById("touch-move-zone");
+  const touchAimZoneEl = document.getElementById("touch-aim-zone");
+  const touchMoveKnobEl = document.getElementById("touch-move-knob");
+  const touchAimKnobEl = document.getElementById("touch-aim-knob");
+  const touchUltBtnEl = document.getElementById("touch-ult-btn");
+
+  function showTouchControls() {
+    if (touchControlsActive) return;
+    touchControlsActive = true;
+    if (touchControlsEl) touchControlsEl.classList.add("active");
+  }
+
+  function clampToJoystickRadius(dx, dy) {
+    const d = Math.hypot(dx, dy);
+    if (d <= TOUCH_JOYSTICK_MAX_R || d < 1e-6) return { x: dx, y: dy };
+    const s = TOUCH_JOYSTICK_MAX_R / d;
+    return { x: dx * s, y: dy * s };
+  }
+
+  function positionTouchKnob(el, originX, originY, dx, dy) {
+    if (!el || !touchControlsEl) return;
+    const wrapRect = touchControlsEl.getBoundingClientRect();
+    const c = clampToJoystickRadius(dx, dy);
+    el.style.left = originX - wrapRect.left + c.x + "px";
+    el.style.top = originY - wrapRect.top + c.y + "px";
+    el.style.display = "block";
+  }
+
+  if (touchMoveZoneEl) {
+    touchMoveZoneEl.addEventListener(
+      "touchstart",
+      (e) => {
+        showTouchControls();
+        if (touchMoveId != null) return;
+        const t = e.changedTouches[0];
+        touchMoveId = t.identifier;
+        touchMoveOriginX = t.clientX;
+        touchMoveOriginY = t.clientY;
+        touchMoveDX = 0;
+        touchMoveDY = 0;
+        positionTouchKnob(touchMoveKnobEl, touchMoveOriginX, touchMoveOriginY, 0, 0);
+        e.preventDefault();
+      },
+      { passive: false }
+    );
+    touchMoveZoneEl.addEventListener(
+      "touchmove",
+      (e) => {
+        for (let i = 0; i < e.changedTouches.length; i++) {
+          const t = e.changedTouches[i];
+          if (t.identifier !== touchMoveId) continue;
+          touchMoveDX = t.clientX - touchMoveOriginX;
+          touchMoveDY = t.clientY - touchMoveOriginY;
+          positionTouchKnob(touchMoveKnobEl, touchMoveOriginX, touchMoveOriginY, touchMoveDX, touchMoveDY);
+        }
+        e.preventDefault();
+      },
+      { passive: false }
+    );
+    const endTouchMove = (e) => {
+      for (let i = 0; i < e.changedTouches.length; i++) {
+        if (e.changedTouches[i].identifier !== touchMoveId) continue;
+        touchMoveId = null;
+        touchMoveDX = 0;
+        touchMoveDY = 0;
+        if (touchMoveKnobEl) touchMoveKnobEl.style.display = "none";
+      }
+    };
+    touchMoveZoneEl.addEventListener("touchend", endTouchMove);
+    touchMoveZoneEl.addEventListener("touchcancel", endTouchMove);
+  }
+
+  if (touchAimZoneEl) {
+    touchAimZoneEl.addEventListener(
+      "touchstart",
+      (e) => {
+        showTouchControls();
+        if (touchAimId != null) return;
+        const t = e.changedTouches[0];
+        touchAimId = t.identifier;
+        touchAimOriginX = t.clientX;
+        touchAimOriginY = t.clientY;
+        positionTouchKnob(touchAimKnobEl, touchAimOriginX, touchAimOriginY, 0, 0);
+        e.preventDefault();
+      },
+      { passive: false }
+    );
+    touchAimZoneEl.addEventListener(
+      "touchmove",
+      (e) => {
+        for (let i = 0; i < e.changedTouches.length; i++) {
+          const t = e.changedTouches[i];
+          if (t.identifier !== touchAimId) continue;
+          const dx = t.clientX - touchAimOriginX;
+          const dy = t.clientY - touchAimOriginY;
+          if (dx * dx + dy * dy > TOUCH_AIM_DEADZONE * TOUCH_AIM_DEADZONE) {
+            touchAimAngleLive = Math.atan2(dy, dx);
+          }
+          positionTouchKnob(touchAimKnobEl, touchAimOriginX, touchAimOriginY, dx, dy);
+        }
+        e.preventDefault();
+      },
+      { passive: false }
+    );
+    const endTouchAim = (e) => {
+      for (let i = 0; i < e.changedTouches.length; i++) {
+        if (e.changedTouches[i].identifier !== touchAimId) continue;
+        touchAimId = null;
+        if (touchAimKnobEl) touchAimKnobEl.style.display = "none";
+      }
+    };
+    touchAimZoneEl.addEventListener("touchend", endTouchAim);
+    touchAimZoneEl.addEventListener("touchcancel", endTouchAim);
+  }
+
+  if (touchUltBtnEl) {
+    touchUltBtnEl.addEventListener(
+      "touchstart",
+      (e) => {
+        showTouchControls();
+        touchUltHeld = true;
+        e.preventDefault();
+      },
+      { passive: false }
+    );
+    const releaseTouchUlt = (e) => {
+      touchUltHeld = false;
+      if (e && e.cancelable) e.preventDefault();
+    };
+    touchUltBtnEl.addEventListener("touchend", releaseTouchUlt, { passive: false });
+    touchUltBtnEl.addEventListener("touchcancel", releaseTouchUlt);
+  }
+
+  // Auto-detect a touch-capable device on load; also covers hybrid
+  // devices (touch laptops) that mostly use a mouse by only showing the
+  // overlay once a touch actually happens, via showTouchControls() above.
+  if (("ontouchstart" in window || navigator.maxTouchPoints > 0)) {
+    showTouchControls();
+  }
+
+  /** Feeds P1's touch input into `keys`, same reset-then-OR approach as
+   *  syncGamepadKeys/syncMouseButtonKeys. Movement codes are P1-exclusive
+   *  so it's safe to reset them here; attack/ultimate are shared with
+   *  mouse aim, whose sync already ran this frame and reset those to
+   *  physKeys, so touch only ORs into them (never resets). */
+  function syncTouchKeys() {
+    const c = HUMAN_PRESETS[0].controls;
+    const moveCodes = [c.up, c.down, c.left, c.right];
+    for (let i = 0; i < moveCodes.length; i++) {
+      keys[moveCodes[i]] = !!physKeys[moveCodes[i]];
+    }
+    if (touchMoveId != null) {
+      if (touchMoveDX < -TOUCH_MOVE_DEADZONE) keys[c.left] = true;
+      if (touchMoveDX > TOUCH_MOVE_DEADZONE) keys[c.right] = true;
+      if (touchMoveDY < -TOUCH_MOVE_DEADZONE) keys[c.up] = true;
+      if (touchMoveDY > TOUCH_MOVE_DEADZONE) keys[c.down] = true;
+    }
+    if (touchAimId != null) keys[c.attack] = true;
+    if (touchUltHeld && c.ultimate) keys[c.ultimate] = true;
+  }
 
   function clamp(v, a, b) {
     return Math.max(a, Math.min(b, v));
@@ -14220,6 +14453,15 @@
     if (isPhoenix(defender) && (defender.phoenixReviveBuffT || 0) > 0) {
       dmg *= PHOENIX_REVIVE_SHIELD_DMG_MUL;
     }
+    if (isEcho(defender)) {
+      const summonCount = aliveEchoSummonCountFor(defender.playerNum);
+      if (summonCount > 0) {
+        dmg *= Math.max(
+          0,
+          1 - ECHO_SUMMON_DMG_RESIST_PER_SUMMON * summonCount
+        );
+      }
+    }
     const hpBefore = defender.hp;
     defender.hp = Math.max(0, defender.hp - dmg);
     const dealt = hpBefore - defender.hp;
@@ -15016,6 +15258,7 @@
       hitLockT: 0,
       ultShot: ult,
       ultDamageLoss: ult ? 0 : undefined,
+      ultSpeedMul: ult ? 1 : undefined,
     });
   }
 
@@ -15157,7 +15400,9 @@
     if (!walls.length) return false;
 
     let bounced = false;
-    const bodyR = pr.r;
+    // Bounce off the hitbox, not the (bigger, ult-only) hurtbox — otherwise
+    // an ult bolt would reflect well before its actual body reaches a wall.
+    const bodyR = pr.hitboxR != null ? pr.hitboxR : pr.r;
     const sx = pr.px;
     const sy = pr.py;
     const dx = pr.x - sx;
@@ -15266,13 +15511,17 @@
 
   function bounceShotOffWalls(pr, owner) {
     let bounced = false;
+    // Bounce off the hitbox, not the (bigger, ult-only) hurtbox — otherwise
+    // an ult bolt would reflect off a wall/obstacle/boundary well before
+    // its actual body gets there.
+    const bounceR = pr.hitboxR != null ? pr.hitboxR : pr.r;
     const obs = getCollidableObstacles();
     for (let i = 0; i < obs.length; i++) {
       const o = obs[i];
       const dx = pr.x - o.x;
       const dy = pr.y - o.y;
       const d = len(dx, dy);
-      const minD = o.r + pr.r;
+      const minD = o.r + bounceR;
       if (d >= minD || d < 1e-6) continue;
       const nx = dx / d;
       const ny = dy / d;
@@ -15287,7 +15536,7 @@
       bounced = true;
     }
     if (currentMapDef().bounds === "rect") {
-      const b = rectArenaBounds(pr.r);
+      const b = rectArenaBounds(bounceR);
       if (pr.x < b.minX) {
         pr.x = b.minX;
         pr.vx = Math.abs(pr.vx);
@@ -15308,7 +15557,7 @@
       }
     } else {
       const ac = arenaCenter();
-      const maxR = arenaBoundaryRadius(pr.r);
+      const maxR = arenaBoundaryRadius(bounceR);
       const dx = pr.x - ac.cx;
       const dy = pr.y - ac.cy;
       const d = len(dx, dy);
@@ -15326,6 +15575,15 @@
     if (bounced) {
       pr.bouncesLeft -= 1;
       pr.wallBounceIdx = (pr.wallBounceIdx || 0) + 1;
+      if (pr.ultShot) {
+        const curSpeed = len(pr.vx, pr.vy);
+        if (curSpeed > 1e-6) {
+          const boosted = curSpeed + RICOCHET_ULT_WALL_BOUNCE_SPEED_GAIN;
+          const scale = boosted / curSpeed;
+          pr.vx *= scale;
+          pr.vy *= scale;
+        }
+      }
       if (pr.ultShot && owner) {
         const target = nearestEnemyFighterTo(pr.x, pr.y, owner);
         if (target) {
@@ -15366,7 +15624,13 @@
     pr.hitLockT = Math.max(0, (pr.hitLockT || 0) - dt);
 
     bounceShotOffWalls(pr, owner);
-    const bObs = resolveObstacleCollision(pr.x, pr.y, pr.vx, pr.vy, pr.r);
+    const bObs = resolveObstacleCollision(
+      pr.x,
+      pr.y,
+      pr.vx,
+      pr.vy,
+      pr.hitboxR != null ? pr.hitboxR : pr.r
+    );
     pr.x = bObs.x;
     pr.y = bObs.y;
     pr.vx = bObs.vx;
@@ -15460,9 +15724,10 @@
    *  projectile that connects with an ult bolt permanently eats into the
    *  damage that bolt deals on its future fighter hits (by however much
    *  that incoming attack would itself have dealt) — burn it down enough
-   *  and it stops dealing any damage at all. Run once per frame, before
-   *  updateProjectiles, so every splice below is settled before that
-   *  loop's own indices are handed out. */
+   *  and it stops dealing any damage at all. It also loses speed on every
+   *  such hit, scaled the same way, down to a floor so it never fully
+   *  stops. Run once per frame, before updateProjectiles, so every splice
+   *  below is settled before that loop's own indices are handed out. */
   function resolveRicochetUltHitsFromEnemyProjectiles() {
     for (let i = projectiles.length - 1; i >= 0; i--) {
       const pr = projectiles[i];
@@ -15479,6 +15744,17 @@
         if (len(pr.x - other.x, pr.y - other.y) > hitR) continue;
         const incomingDmg = projectileBoltDamage(other, pr) || 0;
         pr.ultDamageLoss = (pr.ultDamageLoss || 0) + Math.max(0, incomingDmg);
+
+        const speedMulBefore = pr.ultSpeedMul != null ? pr.ultSpeedMul : 1;
+        const speedMulAfter = Math.max(
+          RICOCHET_ULT_MIN_SPEED_MUL,
+          speedMulBefore - Math.max(0, incomingDmg) / RICOCHET_ULT_SPEED_DAMAGE_REF
+        );
+        const slowScale = speedMulBefore > 1e-6 ? speedMulAfter / speedMulBefore : 1;
+        pr.vx *= slowScale;
+        pr.vy *= slowScale;
+        pr.ultSpeedMul = speedMulAfter;
+
         spawnHitSparks(pr.x, pr.y, other.color || "#fff", 4);
         projectiles.splice(k, 1);
         if (k < i) i--;
@@ -15512,8 +15788,11 @@
   }
 
   function projectileBoltDamage(pr, target) {
-    if (pr.kind === "phoenix" || pr.kind === "barrage" || pr.homing) {
-      return pr.baseDamage;
+    if (pr.kind === "phoenix" || pr.kind === "barrage") return pr.baseDamage;
+    if (pr.homing) {
+      const timeMul = 1 + MARKSMAN_ULT_TIME_GROWTH_PER_SEC * (pr.age || 0);
+      const pierceMul = 1 + MARKSMAN_ULT_PIERCE_GROWTH * (pr.pierceCount || 0);
+      return pr.baseDamage * timeMul * pierceMul;
     }
     if (pr.kind === "spread") return spreadBoltDamage(pr, target);
     if (pr.kind === "nova") return novaBoltDamage(pr, target);
@@ -15700,7 +15979,10 @@
         // Piercing needles keep flying and can still hit other targets this
         // frame (or later ones — the swingKey guard above stops a repeat
         // hit on the same fighter).
-        if (pr.pierce) continue;
+        if (pr.pierce) {
+          pr.pierceCount = (pr.pierceCount || 0) + 1;
+          continue;
+        }
         projectiles.splice(i, 1);
         break;
       }
@@ -18599,6 +18881,7 @@
     updateGamepadStatusUI();
     syncGamepadKeys();
     syncMouseButtonKeys();
+    syncTouchKeys();
     updateAimOverrides();
 
     // Reset canvas state every frame so a bad clip/alpha/transform can't stick.

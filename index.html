@@ -51,6 +51,7 @@
       position: relative;
       border-radius: 14px;
       overflow: hidden;
+      max-width: 100%;
       box-shadow:
         0 0 0 1px rgba(255, 255, 255, 0.08),
         0 0 60px rgba(50, 90, 180, 0.12),
@@ -67,6 +68,8 @@
     }
     canvas {
       display: block;
+      max-width: 100%;
+      height: auto;
       background: #080b12;
       cursor: crosshair;
     }
@@ -155,6 +158,65 @@
     }
     body.help-instructions-hidden #help {
       display: none !important;
+    }
+    /* Touch controls: left half drags a virtual movement stick, right half
+       drags to aim + fire, and a dedicated button triggers the ultimate.
+       Hidden until a touch-capable device is detected (see game.js). */
+    #touch-controls {
+      position: absolute;
+      inset: 0;
+      z-index: 8;
+      pointer-events: none;
+      display: none;
+    }
+    #touch-controls.active {
+      display: block;
+    }
+    .touch-zone {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 50%;
+      pointer-events: auto;
+      touch-action: none;
+    }
+    #touch-move-zone { left: 0; }
+    #touch-aim-zone { right: 0; }
+    .touch-knob {
+      position: absolute;
+      width: 64px;
+      height: 64px;
+      margin-left: -32px;
+      margin-top: -32px;
+      border-radius: 50%;
+      background: rgba(196, 245, 66, 0.22);
+      border: 2px solid rgba(196, 245, 66, 0.65);
+      pointer-events: none;
+      display: none;
+    }
+    #touch-aim-knob {
+      background: rgba(255, 107, 157, 0.22);
+      border-color: rgba(255, 107, 157, 0.65);
+    }
+    #touch-ult-btn {
+      position: absolute;
+      right: 18px;
+      bottom: 18px;
+      width: 72px;
+      height: 72px;
+      border-radius: 50%;
+      background: rgba(255, 107, 157, 0.25);
+      border: 2px solid rgba(255, 107, 157, 0.75);
+      color: var(--text);
+      font-weight: 700;
+      font-size: 12px;
+      letter-spacing: 0.06em;
+      pointer-events: auto;
+      touch-action: none;
+      z-index: 2;
+    }
+    #touch-ult-btn:active {
+      background: rgba(255, 107, 157, 0.5);
     }
     #overlay {
       position: absolute;
@@ -1088,6 +1150,13 @@
         <div class="name base-b">Base B</div>
         <div class="bar-bg"><div class="bar-fill base-b" id="hpBaseB" style="width:100%"></div></div>
       </div>
+    </div>
+    <div id="touch-controls" aria-hidden="true">
+      <div id="touch-move-zone" class="touch-zone"></div>
+      <div id="touch-aim-zone" class="touch-zone"></div>
+      <div id="touch-move-knob" class="touch-knob"></div>
+      <div id="touch-aim-knob" class="touch-knob"></div>
+      <button type="button" id="touch-ult-btn">ULT</button>
     </div>
     <div id="overlay"><div id="overlay-inner"></div></div>
     <div id="mode-screen" aria-label="Choose game mode">
