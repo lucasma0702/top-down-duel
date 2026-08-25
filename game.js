@@ -490,6 +490,10 @@
   const RICOCHET_ULT_BOUNCE_HOMING_TURN = 0.35;
   /** Accent color that marks a Prism Cascade (ult) bolt apart from a normal shot. */
   const RICOCHET_ULT_ACCENT_COLOR = "#facc15";
+  /** The ult bolt's trail is drawn this far back from its current position
+   *  (along its current velocity), not just to last frame's spot — a
+   *  single frame's movement is too short to read as a trail at all. */
+  const RICOCHET_ULT_TRAIL_LEN = 46;
   /** Ricochet bolts accelerate while airborne (px/s²), capped by mul of launch speed. */
   const RICOCHET_SPEED_ACCEL = 120;
   const RICOCHET_SPEED_MAX_MUL = 2.4;
@@ -16796,6 +16800,18 @@
       // so its danger visibly fades instead of vanishing without warning.
       const ultLifeFrac =
         ultBounce && pr.maxLife > 1e-6 ? clamp(pr.life / pr.maxLife, 0, 1) : 1;
+      // A single frame's movement is too short a segment to read as a
+      // trail (especially at lower speeds) — stretch the ult bolt's trail
+      // back along its current velocity instead of just to last frame's spot.
+      let trailFromX = pr.px;
+      let trailFromY = pr.py;
+      if (ultBounce) {
+        const boltSpeed = len(pr.vx, pr.vy);
+        if (boltSpeed > 1e-3) {
+          trailFromX = pr.x - (pr.vx / boltSpeed) * RICOCHET_ULT_TRAIL_LEN;
+          trailFromY = pr.y - (pr.vy / boltSpeed) * RICOCHET_ULT_TRAIL_LEN;
+        }
+      }
       ctx.save();
       ctx.lineCap = "round";
       const trailW = bounce
@@ -16819,7 +16835,7 @@
           ? 0.3 * (0.3 + 0.7 * ultLifeFrac)
           : 0.18;
       ctx.beginPath();
-      ctx.moveTo(pr.px, pr.py);
+      ctx.moveTo(trailFromX, trailFromY);
       ctx.lineTo(pr.x, pr.y);
       ctx.stroke();
       ctx.strokeStyle = pr.color;
@@ -16832,7 +16848,7 @@
             ? 0.95
             : 0.9;
       ctx.beginPath();
-      ctx.moveTo(pr.px, pr.py);
+      ctx.moveTo(trailFromX, trailFromY);
       ctx.lineTo(pr.x, pr.y);
       ctx.stroke();
       // The drawn "ball" tracks the hitbox (what actually deals damage),
