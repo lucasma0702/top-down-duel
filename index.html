@@ -168,6 +168,8 @@
       z-index: 8;
       pointer-events: none;
       display: none;
+      --touch-scale: 1;
+      --touch-ult-bottom: 18px;
     }
     #touch-controls.active {
       display: block;
@@ -182,12 +184,14 @@
     }
     #touch-move-zone { left: 0; }
     #touch-aim-zone { right: 0; }
+    #touch-controls.swap-sides #touch-move-zone { left: auto; right: 0; }
+    #touch-controls.swap-sides #touch-aim-zone { right: auto; left: 0; }
     .touch-knob {
       position: absolute;
-      width: 64px;
-      height: 64px;
-      margin-left: -32px;
-      margin-top: -32px;
+      width: calc(64px * var(--touch-scale));
+      height: calc(64px * var(--touch-scale));
+      margin-left: calc(-32px * var(--touch-scale));
+      margin-top: calc(-32px * var(--touch-scale));
       border-radius: 50%;
       background: rgba(196, 245, 66, 0.22);
       border: 2px solid rgba(196, 245, 66, 0.65);
@@ -201,19 +205,23 @@
     #touch-ult-btn {
       position: absolute;
       right: 18px;
-      bottom: 18px;
-      width: 72px;
-      height: 72px;
+      bottom: var(--touch-ult-bottom);
+      width: calc(72px * var(--touch-scale));
+      height: calc(72px * var(--touch-scale));
       border-radius: 50%;
       background: rgba(255, 107, 157, 0.25);
       border: 2px solid rgba(255, 107, 157, 0.75);
       color: var(--text);
       font-weight: 700;
-      font-size: 12px;
+      font-size: calc(12px * var(--touch-scale));
       letter-spacing: 0.06em;
       pointer-events: auto;
       touch-action: none;
       z-index: 2;
+    }
+    #touch-controls.swap-sides #touch-ult-btn {
+      right: auto;
+      left: 18px;
     }
     #touch-ult-btn:active {
       background: rgba(255, 107, 157, 0.5);
@@ -254,6 +262,35 @@
       font-size: 13px;
     }
     #overlay-inner .accent { color: var(--accent); margin-top: 12px; font-weight: 600; }
+    #overlay-inner .overlay-actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content: center;
+      margin: 16px 0 4px;
+    }
+    #overlay-inner .overlay-actions button {
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 600;
+      padding: 11px 20px;
+      border-radius: 10px;
+      border: 1px solid var(--glass-border);
+      cursor: pointer;
+      color: var(--text);
+      background: linear-gradient(180deg, var(--panel-elevated) 0%, var(--panel) 100%);
+      min-width: 120px;
+      touch-action: manipulation;
+      transition: transform 0.12s ease, box-shadow 0.15s;
+    }
+    #overlay-inner .overlay-actions button:hover {
+      transform: translateY(-1px);
+    }
+    #overlay-inner .overlay-actions button.primary {
+      border-color: rgba(196, 245, 66, 0.5);
+      color: var(--accent);
+      box-shadow: 0 0 20px var(--glow-accent);
+    }
     #hud.mode-versus .boss-bar {
       display: none !important;
     }
@@ -481,6 +518,41 @@
       flex-shrink: 0;
       accent-color: var(--accent);
       cursor: pointer;
+    }
+    #mode-screen .settings-slider {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 14px 16px;
+      border-radius: 12px;
+      border: 1px solid var(--glass-border);
+      background: linear-gradient(165deg, var(--panel-elevated) 0%, var(--panel) 100%);
+    }
+    #mode-screen .settings-slider-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    #mode-screen .settings-slider-head strong {
+      font-size: 13px;
+      color: var(--text);
+    }
+    #mode-screen .settings-slider-head span {
+      font-size: 12px;
+      color: var(--accent);
+      font-weight: 600;
+      flex-shrink: 0;
+    }
+    #mode-screen .settings-slider input[type="range"] {
+      width: 100%;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+    #mode-screen .settings-slider-desc {
+      font-size: 11px;
+      color: var(--muted);
+      line-height: 1.45;
     }
     #char-screen {
       position: absolute;
@@ -775,7 +847,8 @@
       border-color: var(--p5);
       background: rgba(245, 158, 11, 0.12);
     }
-    #char-screen .char-actions {
+    #char-screen .char-actions,
+    #editor-screen .char-actions {
       display: flex;
       gap: 10px;
       flex-wrap: wrap;
@@ -783,7 +856,8 @@
       margin-top: 4px;
       flex-shrink: 0;
     }
-    #char-screen .char-actions button {
+    #char-screen .char-actions button,
+    #editor-screen .char-actions button {
       font-family: inherit;
       font-size: 13px;
       font-weight: 600;
@@ -796,13 +870,190 @@
       min-width: 120px;
       transition: transform 0.12s ease, box-shadow 0.15s;
     }
-    #char-screen .char-actions button:hover {
+    #char-screen .char-actions button:hover,
+    #editor-screen .char-actions button:hover {
       transform: translateY(-1px);
     }
-    #char-screen .char-actions button.primary {
+    #char-screen .char-actions button.primary,
+    #editor-screen .char-actions button.primary {
       border-color: rgba(196, 245, 66, 0.5);
       color: var(--accent);
       box-shadow: 0 0 20px var(--glow-accent);
+    }
+    #editor-screen {
+      position: absolute;
+      inset: 0;
+      z-index: 50;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-start;
+      gap: 10px;
+      padding: 16px 16px 18px;
+      background:
+        radial-gradient(ellipse 80% 40% at 50% 0%, rgba(196, 245, 66, 0.08), transparent),
+        var(--screen-bg);
+      backdrop-filter: blur(6px);
+      color: var(--text);
+      text-align: center;
+      overflow-y: auto;
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+      transition: opacity 0.2s ease, visibility 0.2s;
+    }
+    #editor-screen.visible {
+      opacity: 1;
+      visibility: visible;
+      pointer-events: auto;
+    }
+    #editor-screen h2 {
+      margin: 0;
+      font-size: 1.15rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    #editor-screen p {
+      margin: 0;
+      font-size: 12px;
+      color: var(--muted);
+      max-width: 640px;
+      line-height: 1.5;
+    }
+    .editor-layout {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 14px;
+      align-items: flex-start;
+      justify-content: center;
+      width: 100%;
+      max-width: 1200px;
+    }
+    .editor-toolbar,
+    .editor-side {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      width: 200px;
+      flex-shrink: 0;
+      text-align: left;
+    }
+    .editor-canvas-wrap {
+      flex: 1 1 480px;
+      max-width: 720px;
+      display: flex;
+      justify-content: center;
+    }
+    #editor-canvas {
+      width: 100%;
+      height: auto;
+      aspect-ratio: 960 / 672;
+      border-radius: 10px;
+      border: 1px solid var(--glass-border);
+      background: #05060a;
+      cursor: crosshair;
+      touch-action: none;
+    }
+    .editor-tool-row {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .editor-tool {
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 600;
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid rgba(255,255,255,0.12);
+      background: var(--panel);
+      color: var(--text);
+      cursor: pointer;
+      flex: 1;
+      min-width: 60px;
+    }
+    .editor-tool.selected {
+      border-color: rgba(196, 245, 66, 0.55);
+      background: rgba(196, 245, 66, 0.1);
+      color: var(--accent);
+    }
+    .editor-field {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .editor-field input[type="range"] {
+      width: 100%;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+    .editor-field input[type="text"] {
+      font-family: inherit;
+      font-size: 13px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid rgba(255,255,255,0.15);
+      background: var(--panel);
+      color: var(--text);
+    }
+    .editor-check {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--text);
+      cursor: pointer;
+    }
+    .editor-check input {
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+    .editor-spawn-count {
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .editor-map-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      max-height: 220px;
+      overflow-y: auto;
+    }
+    .editor-map-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 9px;
+      border-radius: 8px;
+      border: 1px solid rgba(255,255,255,0.1);
+      background: rgba(0,0,0,0.2);
+    }
+    .editor-map-row.active {
+      border-color: rgba(196, 245, 66, 0.5);
+      background: rgba(196, 245, 66, 0.08);
+    }
+    .editor-map-row button.map-load {
+      flex: 1;
+      text-align: left;
+      background: none;
+      border: none;
+      color: var(--text);
+      font-family: inherit;
+      font-size: 12px;
+      cursor: pointer;
+      padding: 0;
+    }
+    .editor-map-row button.map-delete {
+      background: none;
+      border: none;
+      color: #f87171;
+      font-family: inherit;
+      font-size: 12px;
+      cursor: pointer;
+      padding: 2px 4px;
     }
     #map-screen {
       position: absolute;
@@ -922,6 +1173,14 @@
     .map-mod-toggle:hover {
       border-color: rgba(255,255,255,0.16);
       background: rgba(0,0,0,0.25);
+    }
+    .map-mod-toggle:has(input:disabled) {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+    .map-shape-btn:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
     }
     .map-mod-toggle.on {
       border-color: rgba(196, 245, 66, 0.45);
@@ -1255,6 +1514,29 @@
             <span>P1 aims with the mouse while WASD moves, instead of facing the movement direction. Left click attacks, right click uses the ultimate (Space/C still work too). Off restores classic keyboard-only controls. Every connected gamepad (PS4/Xbox-style) automatically controls a slot — the 1st pad drives P2, the 2nd drives P3, and so on: left stick move, right stick aim, R2 attack, L2 ult, Square support.</span>
           </span>
         </label>
+        <div class="settings-slider" id="touch-size-group">
+          <div class="settings-slider-head">
+            <strong>Touch control size</strong>
+            <span id="setting-touch-size-value">100%</span>
+          </div>
+          <input type="range" id="setting-touch-size" min="70" max="160" step="5" value="100" />
+          <span class="settings-slider-desc">Scales the movement/aim joysticks and the ultimate button on touch screens.</span>
+        </div>
+        <div class="settings-slider" id="touch-height-group">
+          <div class="settings-slider-head">
+            <strong>Ultimate button height</strong>
+            <span id="setting-touch-height-value">0%</span>
+          </div>
+          <input type="range" id="setting-touch-height" min="0" max="100" step="5" value="0" />
+          <span class="settings-slider-desc">Moves the ultimate button up from the bottom corner, for easier thumb reach.</span>
+        </div>
+        <label class="settings-toggle" for="setting-touch-swap">
+          <input type="checkbox" id="setting-touch-swap" />
+          <span class="settings-toggle-text">
+            <strong>Swap touch sides</strong>
+            <span>Move on the right, aim &amp; attack on the left — the ultimate button moves to the left too.</span>
+          </span>
+        </label>
       </div>
     </div>
     <div id="boss-screen" aria-label="Choose boss">
@@ -1299,6 +1581,55 @@
       <div class="char-actions">
         <button type="button" id="btn-char-back">Back</button>
         <button type="button" class="primary" id="btn-char-continue">Start fight</button>
+      </div>
+    </div>
+    <div id="editor-screen" aria-label="Map editor">
+      <h2>Map editor</h2>
+      <p>Click to place. Drag an obstacle or spawn to move it. Drag empty space with <strong>Wall</strong> selected to draw one. <strong>Erase</strong> removes whatever's under the cursor.</p>
+      <div class="editor-layout">
+        <div class="editor-toolbar">
+          <div class="editor-tool-row">
+            <button type="button" class="editor-tool selected" data-tool="obstacle">Obstacle</button>
+            <button type="button" class="editor-tool" data-tool="wall">Wall</button>
+            <button type="button" class="editor-tool" data-tool="spawn">Spawn</button>
+            <button type="button" class="editor-tool" data-tool="erase">Erase</button>
+          </div>
+          <label class="editor-field">
+            <span>Obstacle radius <strong id="editor-radius-value">24</strong></span>
+            <input type="range" id="editor-obstacle-radius" min="12" max="80" value="24" />
+          </label>
+          <div class="editor-field">
+            <span>Arena shape</span>
+            <div class="editor-tool-row">
+              <button type="button" class="editor-tool shape-btn selected" data-shape="circle">Colosseum</button>
+              <button type="button" class="editor-tool shape-btn" data-shape="rect">Classic box</button>
+            </div>
+          </div>
+          <div class="editor-field">
+            <span>Hazards</span>
+            <label class="editor-check"><input type="checkbox" id="editor-hz-movers" /> Crush blocks</label>
+            <label class="editor-check"><input type="checkbox" id="editor-hz-portals" /> Warp gates</label>
+            <label class="editor-check"><input type="checkbox" id="editor-hz-critters" /> Critters</label>
+          </div>
+          <p class="editor-spawn-count" id="editor-spawn-count">0 spawn points placed</p>
+        </div>
+        <div class="editor-canvas-wrap">
+          <canvas id="editor-canvas" width="960" height="672"></canvas>
+        </div>
+        <div class="editor-side">
+          <label class="editor-field">
+            <span>Map name</span>
+            <input type="text" id="editor-map-name" maxlength="24" placeholder="My map" />
+          </label>
+          <div class="editor-tool-row">
+            <button type="button" id="btn-editor-new">New</button>
+            <button type="button" class="primary" id="btn-editor-save">Save</button>
+          </div>
+          <div class="editor-map-list" id="editor-map-list"></div>
+        </div>
+      </div>
+      <div class="char-actions">
+        <button type="button" id="btn-editor-back">Back to arena modifiers</button>
       </div>
     </div>
   </div>

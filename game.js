@@ -42,6 +42,17 @@
   const bossChoicesEl = document.getElementById("boss-choices");
   const btnBossContinue = document.getElementById("btn-boss-continue");
   const btnBossBack = document.getElementById("btn-boss-back");
+  const editorScreen = document.getElementById("editor-screen");
+  const editorCanvas = document.getElementById("editor-canvas");
+  const editorCtx = editorCanvas ? editorCanvas.getContext("2d") : null;
+  const editorMapListEl = document.getElementById("editor-map-list");
+  const editorMapNameInput = document.getElementById("editor-map-name");
+  const editorSpawnCountEl = document.getElementById("editor-spawn-count");
+  const editorRadiusInput = document.getElementById("editor-obstacle-radius");
+  const editorRadiusValueEl = document.getElementById("editor-radius-value");
+  const btnEditorBack = document.getElementById("btn-editor-back");
+  const btnEditorNew = document.getElementById("btn-editor-new");
+  const btnEditorSave = document.getElementById("btn-editor-save");
 
   const hpBossEl = document.getElementById("hpBoss");
   const hudBossWrap = document.getElementById("hud-boss");
@@ -957,6 +968,59 @@
     };
   }
 
+  // Custom maps (map editor): hand-authored obstacle/wall/spawn layouts,
+  // saved to localStorage. Coordinates are absolute canvas px (same W×H
+  // frame every real match already uses), so they drop straight into
+  // mapRuntime with no scaling. Only offered for versus/teams/boss — horde
+  // and siege already have their own bespoke arena structure.
+  const CUSTOM_MAPS_KEY = "topDownDuel_customMaps";
+  const CUSTOM_MAP_MAX_SPAWNS = MAX_TEAM_FIGHTERS;
+  let customMaps = [];
+  let activeCustomMapId = null;
+
+  function blankCustomMap(name) {
+    return {
+      id: "m" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
+      name: name || "New map",
+      bounds: "circle",
+      obstacles: [],
+      walls: [],
+      spawns: [],
+      movers: false,
+      portals: false,
+      creatures: false,
+    };
+  }
+
+  function loadCustomMaps() {
+    try {
+      const raw = localStorage.getItem(CUSTOM_MAPS_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      customMaps = Array.isArray(parsed) ? parsed : [];
+    } catch (e) {
+      customMaps = [];
+    }
+  }
+
+  function persistCustomMaps() {
+    try {
+      localStorage.setItem(CUSTOM_MAPS_KEY, JSON.stringify(customMaps));
+    } catch (e) {
+      /* ignore */
+    }
+  }
+
+  function getActiveCustomMap() {
+    if (!activeCustomMapId) return null;
+    return customMaps.find((m) => m.id === activeCustomMapId) || null;
+  }
+
+  function customMapsAllowedForMode() {
+    return (
+      gameMode === "versus" || gameMode === "teams" || gameMode === "boss"
+    );
+  }
+
   /** Keyboard humans — remainder of the team can be AI. */
   const ULTIMATE_CD_PER_DAMAGE = 0.11;
   /** Extra ult charge (seconds of CD wiped) when you KO a fighter. */
@@ -1830,6 +1894,15 @@
     } else {
       assignTeamSpawns(cfgs);
     }
+    if (customMapsAllowedForMode()) {
+      const cm = getActiveCustomMap();
+      if (cm && cm.spawns.length > 0) {
+        for (let i = 0; i < cfgs.length; i++) {
+          const sp = cm.spawns[i % cm.spawns.length];
+          cfgs[i].spawn = [sp.x, sp.y];
+        }
+      }
+    }
     return cfgs;
   }
 
@@ -2081,6 +2154,9 @@
   const SETTING_NAME_TAG_HUMAN_AI_KEY = "topDownDuel_nameTagHumanAi";
   const SETTING_NAME_TAG_AI_DIFFICULTY_KEY = "topDownDuel_nameTagAiDifficulty";
   const SETTING_NAME_TAG_PLAYER_NUM_KEY = "topDownDuel_nameTagPlayerNum";
+  const SETTING_TOUCH_SCALE_KEY = "topDownDuel_touchScale";
+  const SETTING_TOUCH_ULT_HEIGHT_KEY = "topDownDuel_touchUltHeight";
+  const SETTING_TOUCH_SWAP_KEY = "topDownDuel_touchSwapSides";
   let showInstructions = true;
   let showCharacterShine = false;
   let showFighterHands = true;
@@ -2141,6 +2217,13 @@
   const TOUCH_MOVE_DEADZONE = 10;
   const TOUCH_AIM_DEADZONE = 10;
   const TOUCH_JOYSTICK_MAX_R = 60;
+  /** User-adjustable (Settings): overall size multiplier for the joysticks
+   *  and ult button, how far up from the bottom corner the ult button
+   *  sits (0-100, mapped to px in applyTouchControlLayout), and whether
+   *  move/aim sides (and the ult button's corner) are mirrored. */
+  let touchControlScale = 1;
+  let touchUltHeightPct = 0;
+  let touchSwapSides = false;
   let touchControlsActive = false;
   let touchMoveId = null;
   let touchMoveOriginX = 0;
@@ -2157,6 +2240,7 @@
   let mapPickerOpen = false;
   let bossPickerOpen = false;
   let characterPickerOpen = false;
+  let editorPickerOpen = false;
   /** @type {string} */
   let selectedBossId = "colossus";
   /** @type {string} */
@@ -5497,10 +5581,23 @@
     if (touchControlsEl) touchControlsEl.classList.add("active");
   }
 
+  /** Applies the Settings-panel touch-control size/position/side choices
+   *  to the live DOM — called once at startup and again on every change. */
+  function applyTouchControlLayout() {
+    if (!touchControlsEl) return;
+    touchControlsEl.style.setProperty("--touch-scale", String(touchControlScale));
+    touchControlsEl.style.setProperty(
+      "--touch-ult-bottom",
+      18 + touchUltHeightPct * 2 + "px"
+    );
+    touchControlsEl.classList.toggle("swap-sides", touchSwapSides);
+  }
+
   function clampToJoystickRadius(dx, dy) {
+    const maxR = TOUCH_JOYSTICK_MAX_R * touchControlScale;
     const d = Math.hypot(dx, dy);
-    if (d <= TOUCH_JOYSTICK_MAX_R || d < 1e-6) return { x: dx, y: dy };
-    const s = TOUCH_JOYSTICK_MAX_R / d;
+    if (d <= maxR || d < 1e-6) return { x: dx, y: dy };
+    const s = maxR / d;
     return { x: dx * s, y: dy * s };
   }
 
@@ -10918,6 +11015,33 @@
       c2d.closePath();
       c2d.fillStyle = "#fff";
       c2d.fill();
+    } else if (cid === "marionette") {
+      const pts = [
+        [0, -r * 1.08],
+        [r * 0.78, 0],
+        [0, r * 1.08],
+        [-r * 0.78, 0],
+      ];
+      c2d.beginPath();
+      c2d.moveTo(pts[0][0], pts[0][1]);
+      for (let i = 1; i < pts.length; i++) c2d.lineTo(pts[i][0], pts[i][1]);
+      c2d.closePath();
+      c2d.fill();
+      c2d.stroke();
+      c2d.strokeStyle = "rgba(255,255,255,0.5)";
+      c2d.lineWidth = 1.2;
+      c2d.beginPath();
+      c2d.moveTo(-r * 0.55, -r * 0.4);
+      c2d.lineTo(r * 0.55, r * 0.4);
+      c2d.moveTo(r * 0.55, -r * 0.4);
+      c2d.lineTo(-r * 0.55, r * 0.4);
+      c2d.stroke();
+      c2d.fillStyle = "rgba(0,0,0,0.35)";
+      for (const [jx, jy] of pts) {
+        c2d.beginPath();
+        c2d.arc(jx, jy, r * 0.12, 0, Math.PI * 2);
+        c2d.fill();
+      }
     } else {
       c2d.beginPath();
       c2d.arc(0, 0, r, 0, Math.PI * 2);
@@ -11147,9 +11271,29 @@
     if (bossScreen) bossScreen.classList.remove("visible");
   }
 
+  /** Copies a custom map's own bounds/hazard choices onto mapModifiers and
+   *  forces off the procedural layout toggles (pillars/lattice/ring/maze)
+   *  it's replacing — resetGame() re-applies this right before building
+   *  the match too, in case the selection changed since. */
+  function applyCustomMapToModifiers(map) {
+    mapModifiers.bounds = map.bounds === "rect" ? "rect" : "circle";
+    mapModifiers.pillars = false;
+    mapModifiers.lattice = false;
+    mapModifiers.ring = false;
+    mapModifiers.maze = false;
+    mapModifiers.movers = !!map.movers;
+    mapModifiers.portals = !!map.portals;
+    mapModifiers.creatures = !!map.creatures;
+  }
+
   function renderMapModifiers() {
     if (!mapModifiersEl) return;
     mapModifiersEl.innerHTML = "";
+    if (!customMapsAllowedForMode() && activeCustomMapId != null) {
+      activeCustomMapId = null;
+    }
+    const activeCustom = getActiveCustomMap();
+    const locked = !!activeCustom;
 
     const shapeSec = document.createElement("div");
     shapeSec.className = "map-mod-section";
@@ -11163,6 +11307,7 @@
       const opt = ARENA_SHAPE_OPTIONS[i];
       const btn = document.createElement("button");
       btn.type = "button";
+      btn.disabled = locked;
       btn.className =
         "map-shape-btn" +
         (mapModifiers.bounds === opt.key ? " selected" : "");
@@ -11194,6 +11339,8 @@
       const input = document.createElement("input");
       input.type = "checkbox";
       input.checked = !!mapModifiers[t.key];
+      input.disabled =
+        locked && (t.key === "pillars" || t.key === "lattice" || t.key === "ring" || t.key === "maze");
       input.addEventListener("change", () => {
         mapModifiers[t.key] = input.checked;
         label.className =
@@ -11217,6 +11364,57 @@
     hazardSec.appendChild(summary);
     mapModifiersEl.appendChild(hazardSec);
 
+    if (customMapsAllowedForMode()) {
+      const customSec = document.createElement("div");
+      customSec.className = "map-mod-section";
+      const customLabel = document.createElement("h3");
+      customLabel.className = "map-mod-label";
+      customLabel.textContent = "Custom map";
+      customSec.appendChild(customLabel);
+      const row = document.createElement("div");
+      row.className = "map-shape-row";
+      const select = document.createElement("select");
+      select.className = "roster-select";
+      select.setAttribute("aria-label", "Custom map");
+      const noneOpt = document.createElement("option");
+      noneOpt.value = "";
+      noneOpt.textContent = "None — use hazards above";
+      select.appendChild(noneOpt);
+      for (let i = 0; i < customMaps.length; i++) {
+        const opt = document.createElement("option");
+        opt.value = customMaps[i].id;
+        opt.textContent = customMaps[i].name;
+        if (customMaps[i].id === activeCustomMapId) opt.selected = true;
+        select.appendChild(opt);
+      }
+      select.addEventListener("change", () => {
+        activeCustomMapId = select.value || null;
+        const map = getActiveCustomMap();
+        if (map) applyCustomMapToModifiers(map);
+        renderMapModifiers();
+        setHelpText();
+      });
+      row.appendChild(select);
+      const editBtn = document.createElement("button");
+      editBtn.type = "button";
+      editBtn.className = "map-shape-btn";
+      editBtn.style.flex = "0 0 auto";
+      editBtn.style.minWidth = "0";
+      editBtn.innerHTML = "<strong>Map editor</strong><span>Design or edit a layout</span>";
+      editBtn.addEventListener("click", () => {
+        openMapEditor(activeCustomMapId);
+      });
+      row.appendChild(editBtn);
+      customSec.appendChild(row);
+      const hint = document.createElement("p");
+      hint.className = "map-mod-summary";
+      hint.textContent = activeCustom
+        ? "Using \"" + activeCustom.name + "\" — its own shape and hazards replace the toggles above."
+        : "Pick a saved map to replace the hazards above with a hand-built layout, or open the editor to make one.";
+      customSec.appendChild(hint);
+      mapModifiersEl.appendChild(customSec);
+    }
+
     if (btnMapContinue) btnMapContinue.disabled = false;
   }
 
@@ -11236,6 +11434,414 @@
   function closeMapScreen() {
     mapPickerOpen = false;
     if (mapScreen) mapScreen.classList.remove("visible");
+  }
+
+  // ---- Map editor ---------------------------------------------------
+  // editorDraft is a plain data clone of the custom-map shape (see
+  // blankCustomMap) being worked on; it's written to `customMaps` (and
+  // localStorage) only on Save, keyed by its own `id` — so "New" just
+  // starts a fresh id and Save either inserts or overwrites in place.
+  let editorTool = "obstacle";
+  let editorDraft = null;
+  let editorObstacleRadius = 24;
+  let editorDrag = null; // { type: "obstacle"|"spawn"|"wall-move"|"wall-draw", index, ... }
+
+  function editorArenaGeometry() {
+    const cx = W * 0.5;
+    const cy = H * 0.5;
+    if (editorDraft && editorDraft.bounds === "rect") {
+      return {
+        shape: "rect",
+        minX: MARGIN,
+        minY: MARGIN,
+        maxX: W - MARGIN,
+        maxY: H - MARGIN,
+      };
+    }
+    const r = Math.min(W - MARGIN * 2, H - MARGIN * 2) * 0.5;
+    return { shape: "circle", cx, cy, r };
+  }
+
+  function editorPointFromEvent(e) {
+    const rect = editorCanvas.getBoundingClientRect();
+    return {
+      x: (e.clientX - rect.left) * (editorCanvas.width / rect.width),
+      y: (e.clientY - rect.top) * (editorCanvas.height / rect.height),
+    };
+  }
+
+  function editorObstacleAt(x, y) {
+    const arr = editorDraft.obstacles;
+    for (let i = arr.length - 1; i >= 0; i--) {
+      if (len(x - arr[i].x, y - arr[i].y) <= arr[i].r) return i;
+    }
+    return -1;
+  }
+
+  function editorSpawnAt(x, y) {
+    const arr = editorDraft.spawns;
+    for (let i = arr.length - 1; i >= 0; i--) {
+      if (len(x - arr[i].x, y - arr[i].y) <= 16) return i;
+    }
+    return -1;
+  }
+
+  function editorWallAt(x, y) {
+    const arr = editorDraft.walls;
+    for (let i = arr.length - 1; i >= 0; i--) {
+      const w = arr[i];
+      if (x >= w.minX && x <= w.maxX && y >= w.minY && y <= w.maxY) return i;
+    }
+    return -1;
+  }
+
+  function drawEditorCanvas() {
+    if (!editorCtx || !editorDraft) return;
+    const c = editorCtx;
+    c.clearRect(0, 0, W, H);
+    c.fillStyle = "#05060a";
+    c.fillRect(0, 0, W, H);
+
+    const geo = editorArenaGeometry();
+    c.save();
+    c.strokeStyle = "rgba(120, 150, 220, 0.55)";
+    c.lineWidth = 2;
+    c.fillStyle = "rgba(70, 100, 160, 0.08)";
+    c.beginPath();
+    if (geo.shape === "circle") {
+      c.arc(geo.cx, geo.cy, geo.r, 0, Math.PI * 2);
+    } else {
+      c.rect(geo.minX, geo.minY, geo.maxX - geo.minX, geo.maxY - geo.minY);
+    }
+    c.fill();
+    c.stroke();
+    c.restore();
+
+    // Walls
+    c.fillStyle = "rgba(148, 163, 184, 0.5)";
+    c.strokeStyle = "rgba(226, 232, 240, 0.7)";
+    c.lineWidth = 1.5;
+    for (let i = 0; i < editorDraft.walls.length; i++) {
+      const w = editorDraft.walls[i];
+      c.fillRect(w.minX, w.minY, w.maxX - w.minX, w.maxY - w.minY);
+      c.strokeRect(w.minX, w.minY, w.maxX - w.minX, w.maxY - w.minY);
+    }
+    if (editorDrag && editorDrag.type === "wall-draw") {
+      const r = editorDrag.rect;
+      c.fillStyle = "rgba(196, 245, 66, 0.18)";
+      c.strokeStyle = "rgba(196, 245, 66, 0.7)";
+      c.setLineDash([5, 5]);
+      c.fillRect(r.minX, r.minY, r.maxX - r.minX, r.maxY - r.minY);
+      c.strokeRect(r.minX, r.minY, r.maxX - r.minX, r.maxY - r.minY);
+      c.setLineDash([]);
+    }
+
+    // Obstacles
+    for (let i = 0; i < editorDraft.obstacles.length; i++) {
+      const o = editorDraft.obstacles[i];
+      c.beginPath();
+      c.arc(o.x, o.y, o.r, 0, Math.PI * 2);
+      c.fillStyle = "rgba(148, 163, 184, 0.55)";
+      c.fill();
+      c.strokeStyle = "rgba(226, 232, 240, 0.8)";
+      c.lineWidth = 1.5;
+      c.stroke();
+    }
+
+    // Spawns
+    for (let i = 0; i < editorDraft.spawns.length; i++) {
+      const s = editorDraft.spawns[i];
+      c.beginPath();
+      c.arc(s.x, s.y, 15, 0, Math.PI * 2);
+      c.fillStyle = "rgba(196, 245, 66, 0.25)";
+      c.fill();
+      c.strokeStyle = "rgba(196, 245, 66, 0.85)";
+      c.lineWidth = 2;
+      c.stroke();
+      c.fillStyle = "#e8ecf4";
+      c.font = "bold 12px system-ui, sans-serif";
+      c.textAlign = "center";
+      c.textBaseline = "middle";
+      c.fillText("P" + (i + 1), s.x, s.y);
+    }
+
+    if (editorSpawnCountEl) {
+      editorSpawnCountEl.textContent =
+        editorDraft.spawns.length + " spawn point" +
+        (editorDraft.spawns.length === 1 ? "" : "s") + " placed";
+    }
+  }
+
+  function editorPointerDown(e) {
+    if (!editorDraft) return;
+    editorCanvas.setPointerCapture(e.pointerId);
+    const p = editorPointFromEvent(e);
+    if (editorTool === "obstacle") {
+      const hit = editorObstacleAt(p.x, p.y);
+      if (hit >= 0) {
+        editorDrag = { type: "obstacle", index: hit };
+      } else {
+        editorDraft.obstacles.push({ x: p.x, y: p.y, r: editorObstacleRadius });
+        editorDrag = { type: "obstacle", index: editorDraft.obstacles.length - 1 };
+      }
+    } else if (editorTool === "wall") {
+      const hit = editorWallAt(p.x, p.y);
+      if (hit >= 0) {
+        const w = editorDraft.walls[hit];
+        editorDrag = {
+          type: "wall-move",
+          index: hit,
+          offX: p.x - w.minX,
+          offY: p.y - w.minY,
+          w: w.maxX - w.minX,
+          h: w.maxY - w.minY,
+        };
+      } else {
+        editorDrag = { type: "wall-draw", x0: p.x, y0: p.y, rect: { minX: p.x, minY: p.y, maxX: p.x, maxY: p.y } };
+      }
+    } else if (editorTool === "spawn") {
+      const hit = editorSpawnAt(p.x, p.y);
+      if (hit >= 0) {
+        editorDrag = { type: "spawn", index: hit };
+      } else if (editorDraft.spawns.length < CUSTOM_MAP_MAX_SPAWNS) {
+        editorDraft.spawns.push({ x: p.x, y: p.y });
+        editorDrag = { type: "spawn", index: editorDraft.spawns.length - 1 };
+      }
+    } else if (editorTool === "erase") {
+      const sHit = editorSpawnAt(p.x, p.y);
+      if (sHit >= 0) {
+        editorDraft.spawns.splice(sHit, 1);
+      } else {
+        const oHit = editorObstacleAt(p.x, p.y);
+        if (oHit >= 0) {
+          editorDraft.obstacles.splice(oHit, 1);
+        } else {
+          const wHit = editorWallAt(p.x, p.y);
+          if (wHit >= 0) editorDraft.walls.splice(wHit, 1);
+        }
+      }
+    }
+    drawEditorCanvas();
+  }
+
+  function editorPointerMove(e) {
+    if (!editorDrag || !editorDraft) return;
+    const p = editorPointFromEvent(e);
+    if (editorDrag.type === "obstacle") {
+      const o = editorDraft.obstacles[editorDrag.index];
+      if (o) {
+        o.x = clamp(p.x, 0, W);
+        o.y = clamp(p.y, 0, H);
+      }
+    } else if (editorDrag.type === "spawn") {
+      const s = editorDraft.spawns[editorDrag.index];
+      if (s) {
+        s.x = clamp(p.x, 0, W);
+        s.y = clamp(p.y, 0, H);
+      }
+    } else if (editorDrag.type === "wall-move") {
+      const w = editorDraft.walls[editorDrag.index];
+      if (w) {
+        const nx = clamp(p.x - editorDrag.offX, 0, W - editorDrag.w);
+        const ny = clamp(p.y - editorDrag.offY, 0, H - editorDrag.h);
+        w.minX = nx;
+        w.minY = ny;
+        w.maxX = nx + editorDrag.w;
+        w.maxY = ny + editorDrag.h;
+      }
+    } else if (editorDrag.type === "wall-draw") {
+      editorDrag.rect = {
+        minX: Math.min(editorDrag.x0, p.x),
+        minY: Math.min(editorDrag.y0, p.y),
+        maxX: Math.max(editorDrag.x0, p.x),
+        maxY: Math.max(editorDrag.y0, p.y),
+      };
+    }
+    drawEditorCanvas();
+  }
+
+  function editorPointerUp() {
+    if (editorDrag && editorDrag.type === "wall-draw" && editorDraft) {
+      const r = editorDrag.rect;
+      const w = Math.max(20, r.maxX - r.minX);
+      const h = Math.max(20, r.maxY - r.minY);
+      editorDraft.walls.push({
+        minX: r.minX,
+        minY: r.minY,
+        maxX: r.minX + w,
+        maxY: r.minY + h,
+      });
+    }
+    editorDrag = null;
+    drawEditorCanvas();
+  }
+
+  function setEditorTool(tool) {
+    editorTool = tool;
+    const btns = document.querySelectorAll(".editor-tool[data-tool]");
+    for (let i = 0; i < btns.length; i++) {
+      btns[i].classList.toggle(
+        "selected",
+        btns[i].getAttribute("data-tool") === tool
+      );
+    }
+  }
+
+  function renderEditorMapList() {
+    if (!editorMapListEl) return;
+    editorMapListEl.innerHTML = "";
+    for (let i = 0; i < customMaps.length; i++) {
+      const m = customMaps[i];
+      const row = document.createElement("div");
+      row.className =
+        "editor-map-row" + (editorDraft && m.id === editorDraft.id ? " active" : "");
+      const loadBtn = document.createElement("button");
+      loadBtn.type = "button";
+      loadBtn.className = "map-load";
+      loadBtn.textContent = m.name;
+      loadBtn.addEventListener("click", () => openMapEditor(m.id));
+      row.appendChild(loadBtn);
+      const delBtn = document.createElement("button");
+      delBtn.type = "button";
+      delBtn.className = "map-delete";
+      delBtn.textContent = "Delete";
+      delBtn.addEventListener("click", () => {
+        customMaps.splice(i, 1);
+        persistCustomMaps();
+        if (activeCustomMapId === m.id) activeCustomMapId = null;
+        if (editorDraft && editorDraft.id === m.id) {
+          editorDraft = blankCustomMap("New map");
+          syncEditorInputsFromDraft();
+        }
+        renderEditorMapList();
+        drawEditorCanvas();
+      });
+      row.appendChild(delBtn);
+      editorMapListEl.appendChild(row);
+    }
+  }
+
+  function syncEditorInputsFromDraft() {
+    if (!editorDraft) return;
+    if (editorMapNameInput) editorMapNameInput.value = editorDraft.name;
+    const shapeBtns = document.querySelectorAll(".shape-btn[data-shape]");
+    for (let i = 0; i < shapeBtns.length; i++) {
+      shapeBtns[i].classList.toggle(
+        "selected",
+        shapeBtns[i].getAttribute("data-shape") === editorDraft.bounds
+      );
+    }
+    const moversCb = document.getElementById("editor-hz-movers");
+    const portalsCb = document.getElementById("editor-hz-portals");
+    const crittersCb = document.getElementById("editor-hz-critters");
+    if (moversCb) moversCb.checked = !!editorDraft.movers;
+    if (portalsCb) portalsCb.checked = !!editorDraft.portals;
+    if (crittersCb) crittersCb.checked = !!editorDraft.creatures;
+    setEditorTool("obstacle");
+  }
+
+  function openMapEditor(mapId) {
+    const existing = mapId ? customMaps.find((m) => m.id === mapId) : null;
+    editorDraft = existing
+      ? JSON.parse(JSON.stringify(existing))
+      : blankCustomMap("New map");
+    editorPickerOpen = true;
+    modePickerOpen = false;
+    mapPickerOpen = false;
+    bossPickerOpen = false;
+    characterPickerOpen = false;
+    if (modeScreen) modeScreen.classList.remove("visible");
+    closeCharScreen();
+    closeBossScreen();
+    closeMapScreen();
+    syncEditorInputsFromDraft();
+    renderEditorMapList();
+    if (editorScreen) editorScreen.classList.add("visible");
+    drawEditorCanvas();
+  }
+
+  function closeMapEditor() {
+    editorPickerOpen = false;
+    if (editorScreen) editorScreen.classList.remove("visible");
+  }
+
+  if (editorCanvas) {
+    editorCanvas.addEventListener("pointerdown", editorPointerDown);
+    editorCanvas.addEventListener("pointermove", editorPointerMove);
+    editorCanvas.addEventListener("pointerup", editorPointerUp);
+    editorCanvas.addEventListener("pointercancel", editorPointerUp);
+  }
+  const editorToolBtns = document.querySelectorAll(".editor-tool[data-tool]");
+  for (let i = 0; i < editorToolBtns.length; i++) {
+    editorToolBtns[i].addEventListener("click", () => {
+      setEditorTool(editorToolBtns[i].getAttribute("data-tool"));
+    });
+  }
+  const editorShapeBtns = document.querySelectorAll(".shape-btn[data-shape]");
+  for (let i = 0; i < editorShapeBtns.length; i++) {
+    editorShapeBtns[i].addEventListener("click", () => {
+      if (!editorDraft) return;
+      editorDraft.bounds = editorShapeBtns[i].getAttribute("data-shape");
+      for (let j = 0; j < editorShapeBtns.length; j++) {
+        editorShapeBtns[j].classList.toggle("selected", editorShapeBtns[j] === editorShapeBtns[i]);
+      }
+      drawEditorCanvas();
+    });
+  }
+  if (editorRadiusInput) {
+    editorRadiusInput.addEventListener("input", () => {
+      editorObstacleRadius = parseInt(editorRadiusInput.value, 10) || 24;
+      if (editorRadiusValueEl) editorRadiusValueEl.textContent = String(editorObstacleRadius);
+    });
+  }
+  const editorHzMovers = document.getElementById("editor-hz-movers");
+  const editorHzPortals = document.getElementById("editor-hz-portals");
+  const editorHzCritters = document.getElementById("editor-hz-critters");
+  if (editorHzMovers) {
+    editorHzMovers.addEventListener("change", () => {
+      if (editorDraft) editorDraft.movers = editorHzMovers.checked;
+    });
+  }
+  if (editorHzPortals) {
+    editorHzPortals.addEventListener("change", () => {
+      if (editorDraft) editorDraft.portals = editorHzPortals.checked;
+    });
+  }
+  if (editorHzCritters) {
+    editorHzCritters.addEventListener("change", () => {
+      if (editorDraft) editorDraft.creatures = editorHzCritters.checked;
+    });
+  }
+  if (editorMapNameInput) {
+    editorMapNameInput.addEventListener("input", () => {
+      if (editorDraft) editorDraft.name = editorMapNameInput.value;
+    });
+  }
+  if (btnEditorNew) {
+    btnEditorNew.addEventListener("click", () => {
+      editorDraft = blankCustomMap("New map");
+      syncEditorInputsFromDraft();
+      renderEditorMapList();
+      drawEditorCanvas();
+    });
+  }
+  if (btnEditorSave) {
+    btnEditorSave.addEventListener("click", () => {
+      if (!editorDraft) return;
+      const name = (editorMapNameInput && editorMapNameInput.value.trim()) || "New map";
+      editorDraft.name = name;
+      const idx = customMaps.findIndex((m) => m.id === editorDraft.id);
+      if (idx >= 0) customMaps[idx] = editorDraft;
+      else customMaps.push(editorDraft);
+      persistCustomMaps();
+      renderEditorMapList();
+    });
+  }
+  if (btnEditorBack) {
+    btnEditorBack.addEventListener("click", () => {
+      closeMapEditor();
+      openMapScreen();
+    });
   }
 
   function openCharScreen() {
@@ -11350,6 +11956,26 @@
       else showNameTagPlayerNum = false;
     } catch (e) {
       showNameTagPlayerNum = false;
+    }
+    try {
+      const raw = localStorage.getItem(SETTING_TOUCH_SCALE_KEY);
+      const n = raw != null ? parseFloat(raw) : NaN;
+      touchControlScale = Number.isFinite(n) ? clamp(n, 0.7, 1.6) : 1;
+    } catch (e) {
+      touchControlScale = 1;
+    }
+    try {
+      const raw = localStorage.getItem(SETTING_TOUCH_ULT_HEIGHT_KEY);
+      const n = raw != null ? parseFloat(raw) : NaN;
+      touchUltHeightPct = Number.isFinite(n) ? clamp(n, 0, 100) : 0;
+    } catch (e) {
+      touchUltHeightPct = 0;
+    }
+    try {
+      const raw = localStorage.getItem(SETTING_TOUCH_SWAP_KEY);
+      touchSwapSides = raw === "1" || raw === "true";
+    } catch (e) {
+      touchSwapSides = false;
     }
   }
 
@@ -11482,6 +12108,30 @@
   function saveMouseAim() {
     try {
       localStorage.setItem(SETTING_MOUSE_AIM_KEY, useMouseAimP1 ? "1" : "0");
+    } catch (e) {
+      /* ignore */
+    }
+  }
+
+  function saveTouchScale() {
+    try {
+      localStorage.setItem(SETTING_TOUCH_SCALE_KEY, String(touchControlScale));
+    } catch (e) {
+      /* ignore */
+    }
+  }
+
+  function saveTouchUltHeight() {
+    try {
+      localStorage.setItem(SETTING_TOUCH_ULT_HEIGHT_KEY, String(touchUltHeightPct));
+    } catch (e) {
+      /* ignore */
+    }
+  }
+
+  function saveTouchSwap() {
+    try {
+      localStorage.setItem(SETTING_TOUCH_SWAP_KEY, touchSwapSides ? "1" : "0");
     } catch (e) {
       /* ignore */
     }
@@ -11622,6 +12272,42 @@
         saveMouseAim();
       });
     }
+    const touchSizeInput = document.getElementById("setting-touch-size");
+    const touchSizeValueEl = document.getElementById("setting-touch-size-value");
+    if (touchSizeInput) {
+      touchSizeInput.value = String(Math.round(touchControlScale * 100));
+      if (touchSizeValueEl) touchSizeValueEl.textContent = touchSizeInput.value + "%";
+      touchSizeInput.addEventListener("input", () => {
+        touchControlScale = clamp(parseFloat(touchSizeInput.value) / 100, 0.7, 1.6);
+        if (touchSizeValueEl) {
+          touchSizeValueEl.textContent = Math.round(touchControlScale * 100) + "%";
+        }
+        applyTouchControlLayout();
+        saveTouchScale();
+      });
+    }
+    const touchHeightInput = document.getElementById("setting-touch-height");
+    const touchHeightValueEl = document.getElementById("setting-touch-height-value");
+    if (touchHeightInput) {
+      touchHeightInput.value = String(touchUltHeightPct);
+      if (touchHeightValueEl) touchHeightValueEl.textContent = touchUltHeightPct + "%";
+      touchHeightInput.addEventListener("input", () => {
+        touchUltHeightPct = clamp(parseFloat(touchHeightInput.value) || 0, 0, 100);
+        if (touchHeightValueEl) touchHeightValueEl.textContent = touchUltHeightPct + "%";
+        applyTouchControlLayout();
+        saveTouchUltHeight();
+      });
+    }
+    const touchSwapCb = document.getElementById("setting-touch-swap");
+    if (touchSwapCb) {
+      touchSwapCb.checked = touchSwapSides;
+      touchSwapCb.addEventListener("change", () => {
+        touchSwapSides = touchSwapCb.checked;
+        applyTouchControlLayout();
+        saveTouchSwap();
+      });
+    }
+    applyTouchControlLayout();
     const tabBtns = document.querySelectorAll(".mode-screen-tab");
     for (let i = 0; i < tabBtns.length; i++) {
       tabBtns[i].addEventListener("click", () => {
@@ -11910,8 +12596,28 @@
     projectiles.length = 0;
     animFx.length = 0;
     winCheckPending = false;
+    // Re-sync in case the custom-map selection or the map itself changed
+    // since it was picked (e.g. edited, then re-saved) without revisiting
+    // the arena-modifiers screen.
+    const activeCustom = customMapsAllowedForMode() ? getActiveCustomMap() : null;
+    if (activeCustom) applyCustomMapToModifiers(activeCustom);
     if (mapModifiers.maze) randomizeMazeVariant();
     initMapRuntime();
+    if (activeCustom) {
+      for (let i = 0; i < activeCustom.obstacles.length; i++) {
+        const o = activeCustom.obstacles[i];
+        mapRuntime.obstacles.push({ x: o.x, y: o.y, r: o.r });
+      }
+      for (let i = 0; i < activeCustom.walls.length; i++) {
+        const w = activeCustom.walls[i];
+        mapRuntime.walls.push({
+          minX: w.minX,
+          minY: w.minY,
+          maxX: w.maxX,
+          maxY: w.maxY,
+        });
+      }
+    }
     if (gameMode === "horde") resetHordeState();
     players = buildPlayers();
     settlePlayerPositions();
@@ -12020,6 +12726,7 @@
 
   loadSettings();
   initSettingsUI();
+  loadCustomMaps();
   openModeScreen();
 
   function resolvePlayerWall(p) {
@@ -15228,6 +15935,7 @@
     const grappler = isGrappler(p);
     const siphon = isSiphon(p);
     const marionette = isMarionette(p);
+    const echo = isEcho(p);
     let speed = RANGED_SPEED * (0.55 + 0.45 * r);
     let hitR = grappler ? GRAPPLE_HIT_R : RANGED_HIT_R;
     if (siphon) {
@@ -15246,7 +15954,15 @@
     const ox = p.x + Math.cos(ang) * (PLAYER_R + 6);
     const oy = p.y + Math.sin(ang) * (PLAYER_R + 6);
     projectiles.push({
-      kind: grappler ? "grapple" : siphon ? "siphon" : marionette ? "needle" : "ranged",
+      kind: grappler
+        ? "grapple"
+        : siphon
+          ? "siphon"
+          : marionette
+            ? "needle"
+            : echo
+              ? "echo"
+              : "ranged",
       x: ox,
       y: oy,
       px: ox,
@@ -16340,9 +17056,16 @@
       "\">" +
       title +
       "</h2>" +
-      "<p>Press <kbd>R</kbd> for a rematch.</p>" +
-      "<p class=\"accent\"><kbd>M</kbd> — back to character select · <kbd>Esc</kbd> — main menu</p>";
+      "<div class=\"overlay-actions\">" +
+      "<button type=\"button\" class=\"primary\" id=\"overlay-btn-rematch\">Rematch</button>" +
+      "<button type=\"button\" id=\"overlay-btn-back\">Character select</button>" +
+      "</div>" +
+      "<p class=\"accent\"><kbd>R</kbd> rematch · <kbd>M</kbd> character select · <kbd>Esc</kbd> main menu</p>";
     overlay.classList.add("visible");
+    const rematchBtn = document.getElementById("overlay-btn-rematch");
+    const backBtn = document.getElementById("overlay-btn-back");
+    if (rematchBtn) rematchBtn.addEventListener("click", resetGame);
+    if (backBtn) backBtn.addEventListener("click", goBackOneScreen);
   }
 
   function drawMapFeatures() {
@@ -16860,6 +17583,8 @@
       const pulse = 1 + 0.12 * Math.sin(spin * 2);
       ctx.translate(pr.x, pr.y);
       ctx.rotate(Math.atan2(pr.y - pr.py, pr.x - pr.px) + (bounce ? spin : 0));
+      // Soft ambient glow shared by every bolt kind — the shape below it
+      // is what actually carries each character's identity.
       ctx.beginPath();
       ctx.arc(0, 0, headR * 1.8 * pulse, 0, Math.PI * 2);
       ctx.fillStyle = pr.color;
@@ -16867,20 +17592,150 @@
         ? 0.1 + 0.12 * (pr.angleMul != null ? pr.angleMul : 0.5)
         : 0.14;
       ctx.fill();
-      ctx.beginPath();
-      ctx.arc(0, 0, headR * pulse, 0, Math.PI * 2);
-      ctx.fillStyle = pr.color;
-      ctx.globalAlpha = nova
+      const coreAlpha = nova
         ? 0.35 + 0.45 * (pr.angleMul != null ? pr.angleMul : 0.5)
         : bounce
           ? 0.7
           : 0.55;
-      ctx.fill();
-      ctx.fillStyle = "#fff";
-      ctx.globalAlpha = 0.35;
-      ctx.beginPath();
-      ctx.arc(-headR * 0.2, -headR * 0.2, headR * 0.35, 0, Math.PI * 2);
-      ctx.fill();
+      const kind = pr.kind;
+      ctx.fillStyle = pr.color;
+      ctx.globalAlpha = coreAlpha;
+      if (kind === "needle") {
+        // Marionette: thin pin — sliver body, sharp tip, small pommel.
+        const nlen = headR * 3.4;
+        pathPolygon([
+          [nlen * 0.62, 0],
+          [-nlen * 0.15, headR * 0.32],
+          [-nlen * 0.38, 0],
+          [-nlen * 0.15, -headR * 0.32],
+        ]);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(-nlen * 0.38, 0, headR * 0.32, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = "#fff";
+        ctx.globalAlpha = 0.5;
+        ctx.beginPath();
+        ctx.arc(nlen * 0.28, 0, headR * 0.16, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (kind === "ranged") {
+        // Marksman: elongated bullet streak with a bright tip.
+        ctx.save();
+        ctx.scale(1.9, 0.62);
+        ctx.beginPath();
+        ctx.arc(0, 0, headR * pulse, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+        ctx.fillStyle = "#fff";
+        ctx.globalAlpha = 0.55;
+        ctx.beginPath();
+        ctx.arc(headR * 1.15, 0, headR * 0.32, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (kind === "echo") {
+        // Echo: faint trailing ghost twin behind the real bolt.
+        ctx.globalAlpha = coreAlpha * 0.4;
+        ctx.beginPath();
+        ctx.arc(-headR * 0.9, 0, headR * 0.85 * pulse, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = coreAlpha;
+        ctx.beginPath();
+        ctx.arc(0, 0, headR * pulse, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = "rgba(255,255,255,0.45)";
+        ctx.lineWidth = 1.2;
+        ctx.setLineDash([2, 2]);
+        ctx.beginPath();
+        ctx.arc(0, 0, headR * 0.55, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      } else if (kind === "phoenix") {
+        // Phoenix: flickering flame droplet.
+        const flameLen = headR * 2.1;
+        pathPolygon([
+          [flameLen * 0.6, 0],
+          [0, headR * 0.75],
+          [-flameLen * 0.35, 0],
+          [0, -headR * 0.75],
+        ]);
+        ctx.fill();
+        ctx.fillStyle = "rgba(255,235,180,0.75)";
+        ctx.globalAlpha = coreAlpha * 0.85;
+        pathPolygon([
+          [flameLen * 0.3, 0],
+          [-flameLen * 0.05, headR * 0.32],
+          [-flameLen * 0.18, 0],
+          [-flameLen * 0.05, -headR * 0.32],
+        ]);
+        ctx.fill();
+      } else if (kind === "spread") {
+        // Scatter: angular shard pellet.
+        pathPolygon([
+          [headR * 1.1, 0],
+          [0, headR * 0.8],
+          [-headR * 0.9, 0],
+          [0, -headR * 0.8],
+        ]);
+        ctx.fill();
+      } else if (nova) {
+        // Nova: radiant spark, spikes around a soft core.
+        for (let s = 0; s < 4; s++) {
+          const sa = (s * Math.PI) / 2 + spin;
+          ctx.beginPath();
+          ctx.moveTo(Math.cos(sa) * headR * 0.4, Math.sin(sa) * headR * 0.4);
+          ctx.lineTo(Math.cos(sa) * headR * 1.5, Math.sin(sa) * headR * 1.5);
+          ctx.strokeStyle = pr.color;
+          ctx.lineWidth = Math.max(1, headR * 0.35);
+          ctx.stroke();
+        }
+        ctx.beginPath();
+        ctx.arc(0, 0, headR * 0.7 * pulse, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (barrage) {
+        // Bulwark: blocky cannon shell.
+        pathRoundedRect(-headR * 0.9, -headR * 0.65, headR * 1.8, headR * 1.3, headR * 0.35);
+        ctx.fill();
+      } else if (grapple) {
+        // Grappler: hook silhouette.
+        ctx.beginPath();
+        ctx.arc(0, 0, headR * 0.75, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = pr.color;
+        ctx.lineWidth = Math.max(1, headR * 0.4);
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        ctx.arc(headR * 0.3, 0, headR * 0.65, -Math.PI * 0.15, Math.PI * 1.05);
+        ctx.stroke();
+      } else if (siphon) {
+        // Siphon: swirling vortex disc.
+        ctx.beginPath();
+        ctx.arc(0, 0, headR * pulse, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = "rgba(255,255,255,0.55)";
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.arc(0, 0, headR * 0.55, spin, spin + Math.PI * 1.3);
+        ctx.stroke();
+      } else if (bounce) {
+        // Ricochet: faceted crystal core.
+        const facets = [];
+        for (let f = 0; f < 6; f++) {
+          const a = (f * Math.PI) / 3;
+          facets.push([Math.cos(a) * headR * pulse, Math.sin(a) * headR * pulse]);
+        }
+        pathPolygon(facets);
+        ctx.fill();
+      } else {
+        ctx.beginPath();
+        ctx.arc(0, 0, headR * pulse, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      if (kind === "ranged" || kind === "echo" || siphon || bounce || nova) {
+        ctx.fillStyle = "#fff";
+        ctx.globalAlpha = 0.35;
+        ctx.beginPath();
+        ctx.arc(-headR * 0.2, -headR * 0.2, headR * 0.35, 0, Math.PI * 2);
+        ctx.fill();
+      }
       if (bounce) {
         const bi = pr.wallBounceIdx || 0;
         ctx.strokeStyle = bi > 0 ? "#fff" : "rgba(255,255,255,0.5)";
@@ -17217,16 +18072,89 @@
 
     if (p.attackStyle === "ranged") {
       const range = rangedDistForPlayer(p, ratio);
-      const siphon = isSiphon(p);
-      ctx.globalAlpha = 0.2 + 0.45 * ratio;
-      ctx.strokeStyle = siphon ? "#fda4af" : p.color;
-      ctx.lineWidth = (siphon ? 2.5 + 2.5 * ratio : 2) + 2 * ratio;
-      ctx.setLineDash(siphon ? [8, 6] : [6, 8]);
-      ctx.beginPath();
-      ctx.moveTo(PLAYER_R * 0.5, 0);
-      ctx.lineTo(range, 0);
-      ctx.stroke();
-      ctx.setLineDash([]);
+      if (isSiphon(p)) {
+        // Siphon: pulsing vortex line with a small spiral at the tip.
+        ctx.globalAlpha = 0.2 + 0.45 * ratio;
+        ctx.strokeStyle = "#fda4af";
+        ctx.lineWidth = 2.5 + 2.5 * ratio;
+        ctx.setLineDash([8, 6]);
+        ctx.beginPath();
+        ctx.moveTo(PLAYER_R * 0.5, 0);
+        ctx.lineTo(range, 0);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        const vortexSpin = performance.now() * 0.006;
+        ctx.globalAlpha = 0.35 + 0.4 * ratio;
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.arc(range, 0, 6 + 3 * ratio, vortexSpin, vortexSpin + Math.PI * 1.4);
+        ctx.stroke();
+      } else if (isGrappler(p)) {
+        // Grappler: chained dashes ending in a hook.
+        ctx.globalAlpha = 0.2 + 0.45 * ratio;
+        ctx.strokeStyle = p.color;
+        ctx.lineWidth = 2.5 + 2 * ratio;
+        ctx.setLineDash([10, 5]);
+        ctx.beginPath();
+        ctx.moveTo(PLAYER_R * 0.5, 0);
+        ctx.lineTo(range, 0);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.globalAlpha = 0.5 + 0.35 * ratio;
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        ctx.arc(range - 6, 0, 7, -Math.PI * 0.15, Math.PI * 1.05);
+        ctx.stroke();
+      } else if (isMarionette(p)) {
+        // Marionette: a fanned trio of thin needle sightlines.
+        for (let ni = -1; ni <= 1; ni++) {
+          const off = ni * 0.05 * (0.4 + 0.6 * ratio);
+          ctx.globalAlpha = (0.18 + 0.4 * ratio) * (ni === 0 ? 1 : 0.65);
+          ctx.strokeStyle = p.color;
+          ctx.lineWidth = ni === 0 ? 2 + 1.5 * ratio : 1.2;
+          ctx.setLineDash([5, 7]);
+          ctx.beginPath();
+          ctx.moveTo(PLAYER_R * 0.5, 0);
+          ctx.lineTo(range * Math.cos(off), range * Math.sin(off));
+          ctx.stroke();
+        }
+        ctx.setLineDash([]);
+      } else if (isEcho(p)) {
+        // Echo: a wavering ghost double-line.
+        ctx.globalAlpha = 0.14 + 0.3 * ratio;
+        ctx.strokeStyle = p.color;
+        ctx.lineWidth = 2 + 2 * ratio;
+        ctx.setLineDash([6, 8]);
+        ctx.beginPath();
+        ctx.moveTo(PLAYER_R * 0.5, -4);
+        ctx.lineTo(range, -4);
+        ctx.stroke();
+        ctx.globalAlpha = 0.2 + 0.45 * ratio;
+        ctx.beginPath();
+        ctx.moveTo(PLAYER_R * 0.5, 0);
+        ctx.lineTo(range, 0);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      } else {
+        // Marksman: precise sight-line with crosshair ticks.
+        ctx.globalAlpha = 0.2 + 0.45 * ratio;
+        ctx.strokeStyle = p.color;
+        ctx.lineWidth = 2 + 2 * ratio;
+        ctx.setLineDash([6, 8]);
+        ctx.beginPath();
+        ctx.moveTo(PLAYER_R * 0.5, 0);
+        ctx.lineTo(range, 0);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.globalAlpha = 0.4 + 0.4 * ratio;
+        ctx.lineWidth = 1.5;
+        for (const tx of [range * 0.5, range * 0.8]) {
+          ctx.beginPath();
+          ctx.moveTo(tx, -4);
+          ctx.lineTo(tx, 4);
+          ctx.stroke();
+        }
+      }
       ctx.restore();
       return;
     }
@@ -18235,6 +19163,32 @@
       ctx.closePath();
       ctx.fillStyle = flash ? "rgba(255,255,255,0.75)" : "rgba(255,255,255,0.35)";
       ctx.fill();
+    } else if (id === "marionette") {
+      // Puppet diamond, crossed by control strings.
+      const pts = [
+        [0, -pr * 1.08],
+        [pr * 0.78, 0],
+        [0, pr * 1.08],
+        [-pr * 0.78, 0],
+      ];
+      pathPolygon(pts);
+      ctx.fill();
+      strokeFighterOutline(false);
+      ctx.beginPath();
+      ctx.moveTo(-pr * 0.55, -pr * 0.4);
+      ctx.lineTo(pr * 0.55, pr * 0.4);
+      ctx.moveTo(pr * 0.55, -pr * 0.4);
+      ctx.lineTo(-pr * 0.55, pr * 0.4);
+      ctx.strokeStyle = flash ? "rgba(255,255,255,0.75)" : "rgba(255,255,255,0.4)";
+      ctx.lineWidth = 1.4;
+      ctx.stroke();
+      // Jointed studs at each diamond point.
+      for (const [jx, jy] of pts) {
+        ctx.beginPath();
+        ctx.arc(jx, jy, pr * 0.12, 0, Math.PI * 2);
+        ctx.fillStyle = flash ? "#fff" : "rgba(0,0,0,0.35)";
+        ctx.fill();
+      }
     } else if (id === "boss") {
       const pts = [];
       for (let i = 0; i < 8; i++) {
@@ -18776,6 +19730,26 @@
         ctx.strokeStyle = "rgba(255, 200, 210, 0.75)";
         ctx.lineWidth = 1.5;
         ctx.stroke();
+      }
+    } else if (id === "marionette") {
+      // Fanned fistful of throwing needles.
+      for (let i = -1; i <= 1; i++) {
+        const a = i * 0.34;
+        const needleLen = pr * (1.1 * extend);
+        const baseX = rh.x + Math.cos(a) * pr * 0.12;
+        const baseY = rh.y + Math.sin(a) * pr * 0.12;
+        const tipX = rh.x + Math.cos(a) * needleLen;
+        const tipY = rh.y + Math.sin(a) * needleLen;
+        ctx.beginPath();
+        ctx.moveTo(baseX, baseY);
+        ctx.lineTo(tipX, tipY);
+        ctx.strokeStyle = metal;
+        ctx.lineWidth = 1.8;
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(tipX, tipY, pr * 0.06, 0, Math.PI * 2);
+        ctx.fillStyle = accent;
+        ctx.fill();
       }
     }
 
