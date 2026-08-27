@@ -23,6 +23,12 @@
       --screen-bg: rgba(8, 11, 20, 0.94);
       --glass-border: rgba(255, 255, 255, 0.1);
       --glow-accent: rgba(196, 245, 66, 0.35);
+      /* Touch-control size/position (Settings). Set on :root, not
+         #touch-controls, so #touch-ult-btn/#touch-menu-btn — siblings of
+         #touch-controls, not descendants (see the comment above them) —
+         still inherit the live values. */
+      --touch-scale: 1;
+      --touch-ult-bottom: 18px;
     }
     * { box-sizing: border-box; }
     body {
@@ -168,11 +174,28 @@
       z-index: 8;
       pointer-events: none;
       display: none;
-      --touch-scale: 1;
-      --touch-ult-bottom: 18px;
     }
     #touch-controls.active {
       display: block;
+    }
+    /* Settings screen preview: shows the real ULT/menu buttons (at their
+       real computed size/position) behind the panel while its touch-control
+       sliders are visible, without flipping on real touch-input handling
+       the way .active does. The invisible move/aim zones stay untouched —
+       they don't cover the settings panel itself (lower z-index) and have
+       nothing else to intercept out where they're visible. */
+    #touch-controls.preview {
+      display: block;
+    }
+    #touch-controls.preview #touch-move-knob,
+    #touch-controls.preview #touch-aim-knob {
+      display: none !important;
+    }
+    /* Preview is look-but-don't-touch: the invisible move/aim zones cover
+       the full screen behind the settings panel, so they must not eat
+       clicks meant for it (or arm real touch input off a stray tap). */
+    #touch-controls.preview .touch-zone {
+      pointer-events: none;
     }
     .touch-zone {
       position: absolute;
@@ -202,29 +225,117 @@
       background: rgba(255, 107, 157, 0.22);
       border-color: rgba(255, 107, 157, 0.65);
     }
+    /* Both buttons below are top-level siblings of #touch-controls, not
+       descendants — during .preview they need to paint above #mode-screen
+       (z-index 40), which a descendant could never do: a child's z-index
+       is capped by its own ancestor stacking context (#touch-controls
+       itself sits at z-index 8), no matter how high the child's own
+       z-index is set. */
     #touch-ult-btn {
       position: absolute;
       right: 18px;
-      bottom: var(--touch-ult-bottom);
-      width: calc(72px * var(--touch-scale));
-      height: calc(72px * var(--touch-scale));
+      bottom: var(--touch-ult-bottom, 18px);
+      width: calc(72px * var(--touch-scale, 1));
+      height: calc(72px * var(--touch-scale, 1));
       border-radius: 50%;
       background: rgba(255, 107, 157, 0.25);
       border: 2px solid rgba(255, 107, 157, 0.75);
       color: var(--text);
       font-weight: 700;
-      font-size: calc(12px * var(--touch-scale));
+      font-size: calc(12px * var(--touch-scale, 1));
       letter-spacing: 0.06em;
-      pointer-events: auto;
+      pointer-events: none;
       touch-action: none;
-      z-index: 2;
+      z-index: 9;
+      display: none;
     }
-    #touch-controls.swap-sides #touch-ult-btn {
+    #touch-controls.active ~ #touch-ult-btn {
+      display: block;
+      pointer-events: auto;
+    }
+    #touch-controls.preview ~ #touch-ult-btn {
+      display: block;
+      z-index: 41;
+    }
+    #touch-controls.swap-sides ~ #touch-ult-btn {
       right: auto;
       left: 18px;
     }
     #touch-ult-btn:active {
       background: rgba(255, 107, 157, 0.5);
+    }
+    #touch-menu-btn {
+      position: absolute;
+      left: 14px;
+      top: 14px;
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      background: rgba(20, 24, 36, 0.75);
+      border: 2px solid rgba(232, 236, 244, 0.4);
+      color: var(--text);
+      font-size: 18px;
+      line-height: 1;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      pointer-events: none;
+      touch-action: none;
+      z-index: 9;
+      display: none;
+      opacity: 0;
+      transition: opacity 0.15s ease;
+    }
+    #touch-controls.active ~ #touch-menu-btn {
+      display: block;
+      opacity: 1;
+      pointer-events: auto;
+    }
+    #touch-controls.preview ~ #touch-menu-btn {
+      display: block;
+      opacity: 1;
+      z-index: 41;
+    }
+    /* Previewed on the settings screen, not actually usable there — tapping
+       either button while adjusting sliders shouldn't pop up match actions
+       or arm the ult. */
+    #touch-controls.preview ~ #touch-ult-btn,
+    #touch-controls.preview ~ #touch-menu-btn {
+      pointer-events: none;
+    }
+    #touch-menu-btn:active {
+      background: rgba(20, 24, 36, 0.95);
+    }
+    body:has(#overlay.visible) #touch-menu-btn {
+      display: none;
+    }
+    #touch-menu-popup {
+      position: absolute;
+      inset: 0;
+      z-index: 26;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      background: rgba(10, 12, 18, 0.72);
+      pointer-events: auto;
+      touch-action: none;
+    }
+    #touch-menu-popup.visible {
+      display: flex;
+    }
+    #touch-menu-popup-inner {
+      text-align: center;
+      padding: 24px 28px;
+      border-radius: 14px;
+      background: linear-gradient(165deg, var(--panel-elevated) 0%, var(--panel) 100%);
+      border: 1px solid var(--glass-border);
+      box-shadow: 0 24px 48px rgba(0, 0, 0, 0.5);
+    }
+    #touch-menu-popup-inner h3 {
+      margin: 0 0 14px;
+      font-size: 1rem;
+      color: var(--muted);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
     }
     #overlay {
       position: absolute;
@@ -262,14 +373,16 @@
       font-size: 13px;
     }
     #overlay-inner .accent { color: var(--accent); margin-top: 12px; font-weight: 600; }
-    #overlay-inner .overlay-actions {
+    #overlay-inner .overlay-actions,
+    #touch-menu-popup-inner .overlay-actions {
       display: flex;
       gap: 10px;
       flex-wrap: wrap;
       justify-content: center;
       margin: 16px 0 4px;
     }
-    #overlay-inner .overlay-actions button {
+    #overlay-inner .overlay-actions button,
+    #touch-menu-popup-inner .overlay-actions button {
       font-family: inherit;
       font-size: 13px;
       font-weight: 600;
@@ -283,10 +396,12 @@
       touch-action: manipulation;
       transition: transform 0.12s ease, box-shadow 0.15s;
     }
-    #overlay-inner .overlay-actions button:hover {
+    #overlay-inner .overlay-actions button:hover,
+    #touch-menu-popup-inner .overlay-actions button:hover {
       transform: translateY(-1px);
     }
-    #overlay-inner .overlay-actions button.primary {
+    #overlay-inner .overlay-actions button.primary,
+    #touch-menu-popup-inner .overlay-actions button.primary {
       border-color: rgba(196, 245, 66, 0.5);
       color: var(--accent);
       box-shadow: 0 0 20px var(--glow-accent);
@@ -955,6 +1070,12 @@
       cursor: crosshair;
       touch-action: none;
     }
+    #editor-canvas.panning {
+      cursor: grab;
+    }
+    #editor-canvas.panning:active {
+      cursor: grabbing;
+    }
     .editor-tool-row {
       display: flex;
       gap: 6px;
@@ -978,6 +1099,10 @@
       background: rgba(196, 245, 66, 0.1);
       color: var(--accent);
     }
+    .editor-tool:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
     .editor-field {
       display: flex;
       flex-direction: column;
@@ -989,6 +1114,17 @@
       width: 100%;
       accent-color: var(--accent);
       cursor: pointer;
+    }
+    .editor-field select {
+      width: 100%;
+    }
+    .editor-field-group {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .editor-field-group[hidden] {
+      display: none;
     }
     .editor-field input[type="text"] {
       font-family: inherit;
@@ -1415,7 +1551,18 @@
       <div id="touch-aim-zone" class="touch-zone"></div>
       <div id="touch-move-knob" class="touch-knob"></div>
       <div id="touch-aim-knob" class="touch-knob"></div>
-      <button type="button" id="touch-ult-btn">ULT</button>
+    </div>
+    <button type="button" id="touch-ult-btn">ULT</button>
+    <button type="button" id="touch-menu-btn" aria-label="Match menu">&#8942;</button>
+    <div id="touch-menu-popup">
+      <div id="touch-menu-popup-inner">
+        <h3>Match menu</h3>
+        <div class="overlay-actions">
+          <button type="button" class="primary" id="touch-menu-rematch">Rematch</button>
+          <button type="button" id="touch-menu-charselect">Character select</button>
+          <button type="button" id="touch-menu-close">Resume</button>
+        </div>
+      </div>
     </div>
     <div id="overlay"><div id="overlay-inner"></div></div>
     <div id="mode-screen" aria-label="Choose game mode">
@@ -1585,7 +1732,7 @@
     </div>
     <div id="editor-screen" aria-label="Map editor">
       <h2>Map editor</h2>
-      <p>Click to place. Drag an obstacle or spawn to move it. Drag empty space with <strong>Wall</strong> selected to draw one. <strong>Erase</strong> removes whatever's under the cursor.</p>
+      <p>Click to place. Drag an obstacle, spawn, warp gate, or critter to move it. Drag empty space with <strong>Wall</strong> or <strong>Crush block</strong> selected to draw one. <strong>Erase</strong> removes whatever's under the cursor — or right-click anywhere, with any tool selected, to delete instantly. Scroll to zoom, or use the zoom slider; drag with <strong>Pan</strong> selected to move around while zoomed in. With <strong>Select</strong>: click (shift-click to add) or drag a box to select, drag a corner handle to resize, or the handle above the selection to rotate — <strong>Ctrl/Cmd+C/V</strong> to copy/paste, <strong>Delete</strong> to remove, <strong>Group</strong>/<strong>Ungroup</strong> to make several things move and delete as one.</p>
       <div class="editor-layout">
         <div class="editor-toolbar">
           <div class="editor-tool-row">
@@ -1593,6 +1740,32 @@
             <button type="button" class="editor-tool" data-tool="wall">Wall</button>
             <button type="button" class="editor-tool" data-tool="spawn">Spawn</button>
             <button type="button" class="editor-tool" data-tool="erase">Erase</button>
+          </div>
+          <div class="editor-tool-row">
+            <button type="button" class="editor-tool" data-tool="mover">Crush block</button>
+            <button type="button" class="editor-tool" data-tool="portal">Warp gate</button>
+            <button type="button" class="editor-tool" data-tool="critter">Critter</button>
+          </div>
+          <div class="editor-tool-row">
+            <button type="button" class="editor-tool" data-tool="pan">Pan</button>
+            <button type="button" class="editor-tool" data-tool="select">Select</button>
+            <button type="button" class="editor-tool" id="btn-editor-undo" disabled>Undo</button>
+          </div>
+          <div class="editor-tool-row">
+            <button type="button" class="editor-tool" id="btn-editor-copy" disabled>Copy</button>
+            <button type="button" class="editor-tool" id="btn-editor-paste" disabled>Paste</button>
+            <button type="button" class="editor-tool" id="btn-editor-group" disabled>Group</button>
+            <button type="button" class="editor-tool" id="btn-editor-ungroup" disabled>Ungroup</button>
+          </div>
+          <p class="editor-spawn-count" id="editor-selection-count">Nothing selected</p>
+          <label class="editor-field">
+            <span>Zoom <strong id="editor-zoom-value">1.0x</strong></span>
+            <input type="range" id="editor-zoom" min="1" max="4" step="0.25" value="1" />
+          </label>
+          <div class="editor-tool-row">
+            <button type="button" class="editor-tool" id="btn-editor-zoom-out">−</button>
+            <button type="button" class="editor-tool" id="btn-editor-zoom-in">+</button>
+            <button type="button" class="editor-tool" id="btn-editor-zoom-reset">Reset view</button>
           </div>
           <label class="editor-field">
             <span>Obstacle radius <strong id="editor-radius-value">24</strong></span>
@@ -1606,10 +1779,27 @@
             </div>
           </div>
           <div class="editor-field">
-            <span>Hazards</span>
-            <label class="editor-check"><input type="checkbox" id="editor-hz-movers" /> Crush blocks</label>
-            <label class="editor-check"><input type="checkbox" id="editor-hz-portals" /> Warp gates</label>
-            <label class="editor-check"><input type="checkbox" id="editor-hz-critters" /> Critters</label>
+            <span>Critter difficulty</span>
+            <select id="editor-critter-difficulty" class="roster-select">
+              <option value="easy">Easy</option>
+              <option value="normal" selected>Normal</option>
+              <option value="hard">Hard</option>
+              <option value="custom">Custom</option>
+            </select>
+          </div>
+          <div id="editor-critter-custom" class="editor-field-group" hidden>
+            <label class="editor-field">
+              <span>Critter HP <strong id="editor-critter-hp-value">1</strong></span>
+              <input type="range" id="editor-critter-hp" min="1" max="6" step="1" value="1" />
+            </label>
+            <label class="editor-field">
+              <span>Critter speed <strong id="editor-critter-speed-value">118</strong></span>
+              <input type="range" id="editor-critter-speed" min="50" max="240" step="2" value="118" />
+            </label>
+            <label class="editor-field">
+              <span>Critter damage <strong id="editor-critter-damage-value">3.5</strong></span>
+              <input type="range" id="editor-critter-damage" min="1" max="12" step="0.5" value="3.5" />
+            </label>
           </div>
           <p class="editor-spawn-count" id="editor-spawn-count">0 spawn points placed</p>
         </div>

@@ -50,9 +50,28 @@
   const editorSpawnCountEl = document.getElementById("editor-spawn-count");
   const editorRadiusInput = document.getElementById("editor-obstacle-radius");
   const editorRadiusValueEl = document.getElementById("editor-radius-value");
+  const editorZoomInput = document.getElementById("editor-zoom");
+  const editorZoomValueEl = document.getElementById("editor-zoom-value");
+  const btnEditorZoomIn = document.getElementById("btn-editor-zoom-in");
+  const btnEditorZoomOut = document.getElementById("btn-editor-zoom-out");
+  const btnEditorZoomReset = document.getElementById("btn-editor-zoom-reset");
+  const btnEditorCopy = document.getElementById("btn-editor-copy");
+  const btnEditorPaste = document.getElementById("btn-editor-paste");
+  const btnEditorGroup = document.getElementById("btn-editor-group");
+  const btnEditorUngroup = document.getElementById("btn-editor-ungroup");
+  const editorSelectionCountEl = document.getElementById("editor-selection-count");
+  const editorCritterDifficultySelect = document.getElementById("editor-critter-difficulty");
+  const editorCritterCustomWrap = document.getElementById("editor-critter-custom");
+  const editorCritterHpInput = document.getElementById("editor-critter-hp");
+  const editorCritterSpeedInput = document.getElementById("editor-critter-speed");
+  const editorCritterDamageInput = document.getElementById("editor-critter-damage");
+  const editorCritterHpValueEl = document.getElementById("editor-critter-hp-value");
+  const editorCritterSpeedValueEl = document.getElementById("editor-critter-speed-value");
+  const editorCritterDamageValueEl = document.getElementById("editor-critter-damage-value");
   const btnEditorBack = document.getElementById("btn-editor-back");
   const btnEditorNew = document.getElementById("btn-editor-new");
   const btnEditorSave = document.getElementById("btn-editor-save");
+  const btnEditorUndo = document.getElementById("btn-editor-undo");
 
   const hpBossEl = document.getElementById("hpBoss");
   const hudBossWrap = document.getElementById("hud-boss");
@@ -324,6 +343,10 @@
   const PHOENIX_DASH_SPEED_MIN = 420;
   const PHOENIX_DASH_SPEED_MAX = 580;
   const PHOENIX_ATTACK_COOLDOWN = 0.8;
+  /** How much longer Phoenix stays turned to face the backward hop after it
+   *  physically ends, before normal aim/movement facing takes back over —
+   *  the hop itself is very short, so without this the turn barely reads. */
+  const PHOENIX_FACING_HOLD_EXTRA = 0.22;
   const PHOENIX_SHOT_SPEED = 380;
   const PHOENIX_SHOT_RANGE = 195;
   const PHOENIX_SHOT_SPREAD = 0.11;
@@ -608,6 +631,36 @@
   const CREATURE_SPAWN_JITTER = 1.35;
   const CREATURE_MAX_ALIVE = 10;
   const CREATURE_SPAWN_CLEAR = 20;
+  const CRITTER_DIFFICULTY_PRESETS = {
+    easy: { hp: 1, speed: 90, damage: 2 },
+    normal: { hp: CREATURE_MAX_HP, speed: CREATURE_SPEED, damage: CREATURE_TOUCH_DAMAGE },
+    hard: { hp: 2, speed: 150, damage: 6 },
+  };
+  /** Per-map critter stat override set by resetGame() when the active
+   *  custom map has its own critter spawns; null falls back to the plain
+   *  CREATURE_* constants (quick-play "Critters" checkbox, no custom map). */
+  let activeCritterStats = null;
+  function critterHpStat() {
+    return activeCritterStats ? activeCritterStats.hp : CREATURE_MAX_HP;
+  }
+  function critterSpeedStat() {
+    return activeCritterStats ? activeCritterStats.speed : CREATURE_SPEED;
+  }
+  function critterDamageStat() {
+    return activeCritterStats ? activeCritterStats.damage : CREATURE_TOUCH_DAMAGE;
+  }
+  function critterStatsForMap(map) {
+    const diff = map.critterDifficulty;
+    if (diff === "custom" && map.critterCustomStats) {
+      const c = map.critterCustomStats;
+      return {
+        hp: c.hp || 1,
+        speed: c.speed || CREATURE_SPEED,
+        damage: c.damage || CREATURE_TOUCH_DAMAGE,
+      };
+    }
+    return CRITTER_DIFFICULTY_PRESETS[diff] || CRITTER_DIFFICULTY_PRESETS.normal;
+  }
 
   const HORDE_WAVE_INTERMISSION = 3.2;
   /** Extra breath after a horde boss falls (waves 25, 50, …). */
@@ -975,8 +1028,21 @@
   // and siege already have their own bespoke arena structure.
   const CUSTOM_MAPS_KEY = "topDownDuel_customMaps";
   const CUSTOM_MAP_MAX_SPAWNS = MAX_TEAM_FIGHTERS;
+  const CUSTOM_MAP_MAX_MOVERS = 8;
+  const CUSTOM_MAP_MAX_PORTALS = 8;
+  const CUSTOM_MAP_MAX_CRITTER_SPAWNS = 8;
   let customMaps = [];
   let activeCustomMapId = null;
+
+  /** Stable per-item ids for every placeable thing in a custom map — not
+   *  used by the runtime game at all, only by the editor's selection/
+   *  group/copy-paste system so a selection or group membership survives
+   *  edits, undo/redo, and reloads instead of relying on array index. */
+  let editorItemIdCounter = 0;
+  function nextEditorItemId() {
+    editorItemIdCounter += 1;
+    return "e" + Date.now().toString(36) + editorItemIdCounter.toString(36);
+  }
 
   function blankCustomMap(name) {
     return {
@@ -986,17 +1052,52 @@
       obstacles: [],
       walls: [],
       spawns: [],
-      movers: false,
-      portals: false,
-      creatures: false,
+      movers: [],
+      portals: [],
+      critterSpawns: [],
+      critterDifficulty: "normal",
+      critterCustomStats: { hp: 1, speed: CREATURE_SPEED, damage: CREATURE_TOUCH_DAMAGE },
     };
+  }
+
+  /** Older saved maps used plain booleans for movers/portals/creatures
+   *  (auto-randomized, no placement); coerce those into the current
+   *  placement-array shape so a stale localStorage entry never crashes
+   *  the editor or resetGame — it just loads in with nothing placed yet. */
+  function editorBackfillIds(arr) {
+    if (!Array.isArray(arr)) return;
+    for (let i = 0; i < arr.length; i++) {
+      if (!arr[i].id) arr[i].id = nextEditorItemId();
+    }
+  }
+
+  function normalizeCustomMap(m) {
+    if (!Array.isArray(m.obstacles)) m.obstacles = [];
+    if (!Array.isArray(m.walls)) m.walls = [];
+    if (!Array.isArray(m.spawns)) m.spawns = [];
+    if (!Array.isArray(m.movers)) m.movers = [];
+    if (!Array.isArray(m.portals)) m.portals = [];
+    if (!Array.isArray(m.critterSpawns)) m.critterSpawns = [];
+    editorBackfillIds(m.obstacles);
+    editorBackfillIds(m.walls);
+    editorBackfillIds(m.spawns);
+    editorBackfillIds(m.movers);
+    editorBackfillIds(m.portals);
+    editorBackfillIds(m.critterSpawns);
+    if (m.critterDifficulty !== "easy" && m.critterDifficulty !== "hard" && m.critterDifficulty !== "custom") {
+      m.critterDifficulty = "normal";
+    }
+    if (!m.critterCustomStats) {
+      m.critterCustomStats = { hp: 1, speed: CREATURE_SPEED, damage: CREATURE_TOUCH_DAMAGE };
+    }
+    return m;
   }
 
   function loadCustomMaps() {
     try {
       const raw = localStorage.getItem(CUSTOM_MAPS_KEY);
       const parsed = raw ? JSON.parse(raw) : [];
-      customMaps = Array.isArray(parsed) ? parsed : [];
+      customMaps = (Array.isArray(parsed) ? parsed : []).map(normalizeCustomMap);
     } catch (e) {
       customMaps = [];
     }
@@ -2254,6 +2355,7 @@
     creatures: [],
     creatureSpawnCd: 0,
     creatureNextId: 0,
+    critterSpawnPoints: null,
     waveEnemies: [],
     waveEnemyNextId: 0,
     hostileShots: [],
@@ -5484,7 +5586,45 @@
     }
   }
 
+  /** True while focus is on a real text field (the map-editor name box,
+   *  any future one) — every single-key shortcut below (movement, R, M,
+   *  the I/J/K/L/O/B/P block) must stay out of the way so typing a name
+   *  containing those letters just types, instead of rematching/backing
+   *  out/etc mid-keystroke. */
+  function isTypingTarget(el) {
+    if (!el) return false;
+    const tag = el.tagName;
+    return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el.isContentEditable;
+  }
+
   window.addEventListener("keydown", (e) => {
+    if (isTypingTarget(e.target)) return;
+    if (editorPickerOpen && (e.ctrlKey || e.metaKey) && e.code === "KeyZ") {
+      e.preventDefault();
+      undoEditorAction();
+      return;
+    }
+    if (editorPickerOpen && (e.ctrlKey || e.metaKey) && e.code === "KeyC") {
+      e.preventDefault();
+      editorCopySelection();
+      return;
+    }
+    if (editorPickerOpen && (e.ctrlKey || e.metaKey) && e.code === "KeyV") {
+      e.preventDefault();
+      editorPasteClipboard();
+      return;
+    }
+    if (editorPickerOpen && (e.code === "Delete" || e.code === "Backspace")) {
+      e.preventDefault();
+      editorEraseSelection();
+      return;
+    }
+    if (editorPickerOpen && e.code === "Escape" && editorSelection.length > 0) {
+      e.preventDefault();
+      editorSelection = [];
+      drawEditorCanvas();
+      return;
+    }
     keys[e.code] = true;
     physKeys[e.code] = true;
     if (e.code === "KeyM") {
@@ -5574,6 +5714,11 @@
   const touchMoveKnobEl = document.getElementById("touch-move-knob");
   const touchAimKnobEl = document.getElementById("touch-aim-knob");
   const touchUltBtnEl = document.getElementById("touch-ult-btn");
+  const touchMenuBtnEl = document.getElementById("touch-menu-btn");
+  const touchMenuPopupEl = document.getElementById("touch-menu-popup");
+  const touchMenuRematchBtn = document.getElementById("touch-menu-rematch");
+  const touchMenuCharSelectBtn = document.getElementById("touch-menu-charselect");
+  const touchMenuCloseBtn = document.getElementById("touch-menu-close");
 
   function showTouchControls() {
     if (touchControlsActive) return;
@@ -5582,14 +5727,17 @@
   }
 
   /** Applies the Settings-panel touch-control size/position/side choices
-   *  to the live DOM — called once at startup and again on every change. */
+   *  to the live DOM — called once at startup and again on every change.
+   *  The two custom properties live on :root, not #touch-controls: the
+   *  ult/menu buttons are its siblings (not descendants, so they can paint
+   *  above #mode-screen while previewed on the settings screen — see the
+   *  CSS comment above #touch-ult-btn), and sibling elements don't inherit
+   *  a custom property set on one another. */
   function applyTouchControlLayout() {
     if (!touchControlsEl) return;
-    touchControlsEl.style.setProperty("--touch-scale", String(touchControlScale));
-    touchControlsEl.style.setProperty(
-      "--touch-ult-bottom",
-      18 + touchUltHeightPct * 2 + "px"
-    );
+    const root = document.documentElement.style;
+    root.setProperty("--touch-scale", String(touchControlScale));
+    root.setProperty("--touch-ult-bottom", 18 + touchUltHeightPct * 2 + "px");
     touchControlsEl.classList.toggle("swap-sides", touchSwapSides);
   }
 
@@ -5715,6 +5863,33 @@
     touchUltBtnEl.addEventListener("touchcancel", releaseTouchUlt);
   }
 
+  // Mid-match touch menu: R (rematch) and M (character select) are
+  // keyboard-only otherwise, so touch players get a small corner button
+  // that opens the same two actions (plus a way to just resume).
+  if (touchMenuBtnEl && touchMenuPopupEl) {
+    touchMenuBtnEl.addEventListener("click", () => {
+      showTouchControls();
+      touchMenuPopupEl.classList.add("visible");
+    });
+    if (touchMenuCloseBtn) {
+      touchMenuCloseBtn.addEventListener("click", () => {
+        touchMenuPopupEl.classList.remove("visible");
+      });
+    }
+    if (touchMenuRematchBtn) {
+      touchMenuRematchBtn.addEventListener("click", () => {
+        touchMenuPopupEl.classList.remove("visible");
+        resetGame();
+      });
+    }
+    if (touchMenuCharSelectBtn) {
+      touchMenuCharSelectBtn.addEventListener("click", () => {
+        touchMenuPopupEl.classList.remove("visible");
+        goBackOneScreen();
+      });
+    }
+  }
+
   // Auto-detect a touch-capable device on load; also covers hybrid
   // devices (touch laptops) that mostly use a mouse by only showing the
   // overlay once a touch actually happens, via showTouchControls() above.
@@ -5751,6 +5926,31 @@
     return Math.hypot(x, y);
   }
 
+  /** Rotates a point around an arbitrary center. Used for walls placed at
+   *  a 45°-ish angle in the map editor — collision math stays in the
+   *  wall's own unrotated local frame (see WALL_ANGLE below) and just
+   *  needs points transformed in and out of that frame. */
+  function rotateAroundCenter(x, y, cx, cy, angle) {
+    if (!angle) return { x, y };
+    const dx = x - cx;
+    const dy = y - cy;
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    return { x: cx + dx * cos - dy * sin, y: cy + dx * sin + dy * cos };
+  }
+
+  /** Same rotation, but for a direction/velocity — no center to offset. */
+  function rotateVector(x, y, angle) {
+    if (!angle) return { x, y };
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    return { x: x * cos - y * sin, y: x * sin + y * cos };
+  }
+
+  function wallCenter(w) {
+    return { x: (w.minX + w.maxX) / 2, y: (w.minY + w.maxY) / 2 };
+  }
+
   function norm(x, y) {
     const l = len(x, y);
     if (l < 1e-6) return { x: 0, y: 0 };
@@ -5779,6 +5979,7 @@
 
   function mapHasCreatures() {
     if (gameMode === "horde") return false;
+    if (mapRuntime.critterSpawnPoints && mapRuntime.critterSpawnPoints.length) return true;
     return !!mapModifiers.creatures;
   }
 
@@ -6109,7 +6310,11 @@
     );
   }
 
-  function repulsionFromWallRect(x, y, w, bodyR) {
+  function repulsionFromWallRect(x0, y0, w, bodyR) {
+    const ang = w.angle || 0;
+    const wc = ang ? wallCenter(w) : null;
+    const q = ang ? rotateAroundCenter(x0, y0, wc.x, wc.y, -ang) : { x: x0, y: y0 };
+    const x = q.x, y = q.y;
     const cx = clamp(x, w.minX, w.maxX);
     const cy = clamp(y, w.minY, w.maxY);
     let dx = x - cx;
@@ -6139,7 +6344,8 @@
     const influence = bodyR + 58;
     if (d >= influence) return { x: 0, y: 0 };
     const strength = ((influence - d) / influence) * ((influence - d) / influence);
-    return { x: (dx / d) * strength, y: (dy / d) * strength };
+    const local = { x: (dx / d) * strength, y: (dy / d) * strength };
+    return ang ? rotateVector(local.x, local.y, ang) : local;
   }
 
   function obstacleRepulsionVector(x, y, bodyR) {
@@ -6160,11 +6366,17 @@
     const walls = mapRuntime.walls;
     for (let i = 0; i < walls.length; i++) {
       const w = walls[i];
+      // Rotated walls' local box doesn't bound their actual world footprint
+      // — pad by the worst case (diagonal) instead of the flat 90 so this
+      // broad-phase cull can't skip a rotated wall that's really in range.
+      const pad = w.angle
+        ? Math.SQRT2 * Math.max((w.maxX - w.minX) / 2, (w.maxY - w.minY) / 2) + 90
+        : 90;
       if (
-        x < w.minX - 90 ||
-        x > w.maxX + 90 ||
-        y < w.minY - 90 ||
-        y > w.maxY + 90
+        x < w.minX - pad ||
+        x > w.maxX + pad ||
+        y < w.minY - pad ||
+        y > w.maxY + pad
       ) {
         continue;
       }
@@ -6248,41 +6460,65 @@
       let hit = false;
       for (let i = 0; i < walls.length; i++) {
         const w = walls[i];
+        const ang = w.angle || 0;
+        const wc = ang ? wallCenter(w) : null;
+        // Do the whole test/resolve in the wall's own unrotated local frame
+        // (a no-op transform when ang is 0), then rotate the corrected
+        // position/velocity back to world space only if this wall hit.
+        const qp = ang ? rotateAroundCenter(x, y, wc.x, wc.y, -ang) : { x, y };
+        const qv = ang ? rotateVector(vx, vy, -ang) : { x: vx, y: vy };
+        let qx = qp.x, qy = qp.y, qvx = qv.x, qvy = qv.y;
         const left = w.minX - bodyR;
         const right = w.maxX + bodyR;
         const top = w.minY - bodyR;
         const bottom = w.maxY + bodyR;
-        if (x < left || x > right || y < top || y > bottom) continue;
-        const penL = x - left;
-        const penR = right - x;
-        const penT = y - top;
-        const penB = bottom - y;
+        if (qx < left || qx > right || qy < top || qy > bottom) continue;
+        const penL = qx - left;
+        const penR = right - qx;
+        const penT = qy - top;
+        const penB = bottom - qy;
         const minPen = Math.min(penL, penR, penT, penB);
+        let localXZeroed = false, localYZeroed = false;
         if (minPen === penL) {
-          x = left;
-          if (vx > 0) {
-            vx = 0;
-            xZeroed = true;
+          qx = left;
+          if (qvx > 0) {
+            qvx = 0;
+            localXZeroed = true;
           }
         } else if (minPen === penR) {
-          x = right;
-          if (vx < 0) {
-            vx = 0;
-            xZeroed = true;
+          qx = right;
+          if (qvx < 0) {
+            qvx = 0;
+            localXZeroed = true;
           }
         } else if (minPen === penT) {
-          y = top;
-          if (vy > 0) {
-            vy = 0;
-            yZeroed = true;
+          qy = top;
+          if (qvy > 0) {
+            qvy = 0;
+            localYZeroed = true;
           }
         } else {
-          y = bottom;
-          if (vy < 0) {
-            vy = 0;
-            yZeroed = true;
+          qy = bottom;
+          if (qvy < 0) {
+            qvy = 0;
+            localYZeroed = true;
           }
         }
+        if (ang) {
+          const wp = rotateAroundCenter(qx, qy, wc.x, wc.y, ang);
+          const wv = rotateVector(qvx, qvy, ang);
+          x = wp.x;
+          y = wp.y;
+          vx = wv.x;
+          vy = wv.y;
+        } else {
+          x = qx;
+          y = qy;
+          vx = qvx;
+          vy = qvy;
+        }
+        if (localXZeroed) xZeroed = true;
+        if (localYZeroed) yZeroed = true;
         hit = true;
       }
       if (!hit) break;
@@ -6388,7 +6624,20 @@
     const walls = mapRuntime.walls;
     for (let i = 0; i < walls.length; i++) {
       const w = walls[i];
-      const t = rayDistToAabb(x0, y0, dirX, dirY, w.minX, w.minY, w.maxX, w.maxY);
+      const ang = w.angle || 0;
+      let rx0 = x0, ry0 = y0, rdx = dirX, rdy = dirY;
+      if (ang) {
+        const wc = wallCenter(w);
+        const rp = rotateAroundCenter(x0, y0, wc.x, wc.y, -ang);
+        rx0 = rp.x;
+        ry0 = rp.y;
+        const rv = rotateVector(dirX, dirY, -ang);
+        rdx = rv.x;
+        rdy = rv.y;
+      }
+      // t is a distance along the ray, which rotating the frame doesn't
+      // change — no transform-back needed for the result.
+      const t = rayDistToAabb(rx0, ry0, rdx, rdy, w.minX, w.minY, w.maxX, w.maxY);
       if (t > 1e-4 && t < dist) dist = t;
     }
     return dist;
@@ -6661,6 +6910,8 @@
     mapRuntime.creatures = [];
     mapRuntime.creatureSpawnCd = CREATURE_SPAWN_INTERVAL * 0.4;
     mapRuntime.creatureNextId = 0;
+    mapRuntime.critterSpawnPoints = null;
+    activeCritterStats = null;
     mapRuntime.waveEnemies = [];
     mapRuntime.waveEnemyNextId = 0;
     mapRuntime.hostileShots = [];
@@ -6938,11 +7189,12 @@
     const walls = mapRuntime.walls;
     for (let i = 0; i < walls.length; i++) {
       const w = walls[i];
+      const q = w.angle ? rotateAroundCenter(x, y, wallCenter(w).x, wallCenter(w).y, -w.angle) : { x, y };
       if (
-        x >= w.minX - r &&
-        x <= w.maxX + r &&
-        y >= w.minY - r &&
-        y <= w.maxY + r
+        q.x >= w.minX - r &&
+        q.x <= w.maxX + r &&
+        q.y >= w.minY - r &&
+        q.y <= w.maxY + r
       ) {
         return true;
       }
@@ -6955,7 +7207,45 @@
     return false;
   }
 
+  function creatureSpawnPointClear(x, y) {
+    if (pointBlockedForCreature(x, y, CREATURE_RADIUS)) return false;
+    for (let i = 0; i < players.length; i++) {
+      const p = players[i];
+      if (p.hp <= 0) continue;
+      if (len(x - p.x, y - p.y) < getPlayerRadius(p) + CREATURE_RADIUS + CREATURE_SPAWN_CLEAR) {
+        return false;
+      }
+    }
+    const list = mapRuntime.creatures;
+    for (let c = 0; c < list.length; c++) {
+      if (len(x - list[c].x, y - list[c].y) < CREATURE_RADIUS * 2.8) return false;
+    }
+    return true;
+  }
+
+  /** Custom maps can pin exact critter spawn points via the map editor
+   *  (mapRuntime.critterSpawnPoints) — pick a random one of those that's
+   *  currently clear instead of sampling the whole arena. */
+  function pickCustomCreatureSpawn() {
+    const pts = mapRuntime.critterSpawnPoints;
+    const order = pts.map((_, i) => i);
+    for (let i = order.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const tmp = order[i];
+      order[i] = order[j];
+      order[j] = tmp;
+    }
+    for (let oi = 0; oi < order.length; oi++) {
+      const pt = pts[order[oi]];
+      if (creatureSpawnPointClear(pt.x, pt.y)) return { x: pt.x, y: pt.y };
+    }
+    return null;
+  }
+
   function pickRandomCreatureSpawn() {
+    if (mapRuntime.critterSpawnPoints && mapRuntime.critterSpawnPoints.length) {
+      return pickCustomCreatureSpawn();
+    }
     const ac = arenaCenter();
     const R = arenaRadius();
     for (let t = 0; t < 52; t++) {
@@ -6963,25 +7253,7 @@
       const dist = R * (0.18 + Math.random() * 0.68);
       const x = ac.cx + Math.cos(ang) * dist;
       const y = ac.cy + Math.sin(ang) * dist;
-      if (pointBlockedForCreature(x, y, CREATURE_RADIUS)) continue;
-      let ok = true;
-      for (let i = 0; i < players.length; i++) {
-        const p = players[i];
-        if (p.hp <= 0) continue;
-        if (len(x - p.x, y - p.y) < getPlayerRadius(p) + CREATURE_RADIUS + CREATURE_SPAWN_CLEAR) {
-          ok = false;
-          break;
-        }
-      }
-      if (!ok) continue;
-      const list = mapRuntime.creatures;
-      for (let c = 0; c < list.length; c++) {
-        if (len(x - list[c].x, y - list[c].y) < CREATURE_RADIUS * 2.8) {
-          ok = false;
-          break;
-        }
-      }
-      if (ok) return { x: x, y: y };
+      if (creatureSpawnPointClear(x, y)) return { x: x, y: y };
     }
     return null;
   }
@@ -6995,8 +7267,8 @@
       vx: 0,
       vy: 0,
       r: CREATURE_RADIUS,
-      hp: scaleHp(CREATURE_MAX_HP),
-      maxHp: scaleHp(CREATURE_MAX_HP),
+      hp: scaleHp(critterHpStat()),
+      maxHp: scaleHp(critterHpStat()),
       hitFlash: 0,
       wanderT: 0,
       touchCd: Object.create(null),
@@ -7036,15 +7308,15 @@
       const dx = target.x - c.x;
       const dy = target.y - c.y;
       const d = len(dx, dy);
-      c.vx = (dx / d) * CREATURE_SPEED * slowMul;
-      c.vy = (dy / d) * CREATURE_SPEED * slowMul;
+      c.vx = (dx / d) * critterSpeedStat() * slowMul;
+      c.vy = (dy / d) * critterSpeedStat() * slowMul;
     } else {
       c.wanderT = (c.wanderT || 0) - dt;
       if (c.wanderT <= 0) {
         c.wanderT = 0.35 + Math.random() * 0.75;
         const a = Math.random() * Math.PI * 2;
-        c.vx = Math.cos(a) * CREATURE_SPEED * 0.38 * slowMul;
-        c.vy = Math.sin(a) * CREATURE_SPEED * 0.38 * slowMul;
+        c.vx = Math.cos(a) * critterSpeedStat() * 0.38 * slowMul;
+        c.vy = Math.sin(a) * critterSpeedStat() * 0.38 * slowMul;
       }
     }
     c.x += c.vx * dt;
@@ -7066,7 +7338,7 @@
     const cd = c.touchCd[key] || 0;
     if (cd > 0) return;
     if (!creatureTouchesFighter(c, fighter)) return;
-    applyDamageTo(fighter, null, CREATURE_TOUCH_DAMAGE, {
+    applyDamageTo(fighter, null, critterDamageStat(), {
       hitFlash: 0.1,
       knockFrom: c,
       knockMul: 0.034,
@@ -8303,11 +8575,12 @@
     const walls = mapRuntime.walls;
     for (let i = 0; i < walls.length; i++) {
       const w = walls[i];
+      const q = w.angle ? rotateAroundCenter(x, y, wallCenter(w).x, wallCenter(w).y, -w.angle) : { x, y };
       if (
-        x >= w.minX - bodyR &&
-        x <= w.maxX + bodyR &&
-        y >= w.minY - bodyR &&
-        y <= w.maxY + bodyR
+        q.x >= w.minX - bodyR &&
+        q.x <= w.maxX + bodyR &&
+        q.y >= w.minY - bodyR &&
+        q.y <= w.maxY + bodyR
       ) {
         return true;
       }
@@ -11271,9 +11544,11 @@
     if (bossScreen) bossScreen.classList.remove("visible");
   }
 
-  /** Copies a custom map's own bounds/hazard choices onto mapModifiers and
-   *  forces off the procedural layout toggles (pillars/lattice/ring/maze)
-   *  it's replacing — resetGame() re-applies this right before building
+  /** Copies a custom map's own bounds choice onto mapModifiers and forces
+   *  off every procedural layout toggle it's replacing (pillars/lattice/
+   *  ring/maze, and the movers/portals/creatures auto-randomizers) —
+   *  resetGame() places the map's own crush blocks/warp gates/critter
+   *  spawns directly instead, and re-applies this right before building
    *  the match too, in case the selection changed since. */
   function applyCustomMapToModifiers(map) {
     mapModifiers.bounds = map.bounds === "rect" ? "rect" : "circle";
@@ -11281,9 +11556,9 @@
     mapModifiers.lattice = false;
     mapModifiers.ring = false;
     mapModifiers.maze = false;
-    mapModifiers.movers = !!map.movers;
-    mapModifiers.portals = !!map.portals;
-    mapModifiers.creatures = !!map.creatures;
+    mapModifiers.movers = false;
+    mapModifiers.portals = false;
+    mapModifiers.creatures = false;
   }
 
   function renderMapModifiers() {
@@ -11445,6 +11720,38 @@
   let editorDraft = null;
   let editorObstacleRadius = 24;
   let editorDrag = null; // { type: "obstacle"|"spawn"|"wall-move"|"wall-draw", index, ... }
+  /** Zoom/pan view state — editorZoom is 1 (fully zoomed out, the whole
+   *  map fits) up to 4; editorViewX/Y is the world-space point that maps
+   *  to the canvas's top-left corner at the current zoom. Clamped so the
+   *  visible viewport never drifts outside the map's own bounds. */
+  let editorZoom = 1;
+  let editorViewX = 0;
+  let editorViewY = 0;
+  /** Snapshots of editorDraft taken right before each mutating action, so
+   *  Undo can pop back to them. Cleared whenever a different map is opened
+   *  (undo history doesn't carry over between maps). */
+  const editorUndoStack = [];
+  const EDITOR_UNDO_LIMIT = 50;
+
+  function pushEditorUndo() {
+    if (!editorDraft) return;
+    editorUndoStack.push(JSON.parse(JSON.stringify(editorDraft)));
+    if (editorUndoStack.length > EDITOR_UNDO_LIMIT) editorUndoStack.shift();
+    updateEditorUndoButton();
+  }
+
+  function undoEditorAction() {
+    if (!editorUndoStack.length) return;
+    editorDraft = editorUndoStack.pop();
+    syncEditorInputsFromDraft();
+    renderEditorMapList();
+    drawEditorCanvas();
+    updateEditorUndoButton();
+  }
+
+  function updateEditorUndoButton() {
+    if (btnEditorUndo) btnEditorUndo.disabled = editorUndoStack.length === 0;
+  }
 
   function editorArenaGeometry() {
     const cx = W * 0.5;
@@ -11462,12 +11769,72 @@
     return { shape: "circle", cx, cy, r };
   }
 
-  function editorPointFromEvent(e) {
+  /** Client (CSS-pixel) point -> canvas-internal pixel, ignoring zoom —
+   *  just the fixed 960x672-vs-rendered-size ratio every editor tool
+   *  already accounted for before zoom existed. */
+  function editorCanvasPxFromEvent(e) {
     const rect = editorCanvas.getBoundingClientRect();
     return {
       x: (e.clientX - rect.left) * (editorCanvas.width / rect.width),
       y: (e.clientY - rect.top) * (editorCanvas.height / rect.height),
     };
+  }
+
+  /** Client point -> world/map coordinate, accounting for the current
+   *  zoom + pan — this is what every placement/hit-test/drag call uses,
+   *  so they all keep working unchanged regardless of the current view. */
+  function editorPointFromEvent(e) {
+    const px = editorCanvasPxFromEvent(e);
+    return {
+      x: px.x / editorZoom + editorViewX,
+      y: px.y / editorZoom + editorViewY,
+    };
+  }
+
+  function editorClampView() {
+    const visW = W / editorZoom;
+    const visH = H / editorZoom;
+    editorViewX = clamp(editorViewX, 0, Math.max(0, W - visW));
+    editorViewY = clamp(editorViewY, 0, Math.max(0, H - visH));
+  }
+
+  function editorSyncZoomUI() {
+    if (editorZoomInput) editorZoomInput.value = String(editorZoom);
+    if (editorZoomValueEl) editorZoomValueEl.textContent = editorZoom.toFixed(2) + "x";
+  }
+
+  function editorResetView() {
+    editorZoom = 1;
+    editorViewX = 0;
+    editorViewY = 0;
+    editorSyncZoomUI();
+    // Selection is index/id-bound to whichever map is open — a fresh or
+    // different map means the old selection can't mean anything anymore.
+    editorSelection = [];
+  }
+
+  /** Sets zoom (clamped 1-4) while keeping the world point currently under
+   *  `anchorPx` (a canvas-internal pixel, from editorCanvasPxFromEvent)
+   *  fixed on screen — defaults to the canvas center for slider/button use,
+   *  so zooming in doesn't yank the view somewhere unexpected. */
+  function editorSetZoom(newZoom, anchorPx) {
+    if (!editorDraft) return;
+    const anchor = anchorPx || { x: W / 2, y: H / 2 };
+    const worldX = anchor.x / editorZoom + editorViewX;
+    const worldY = anchor.y / editorZoom + editorViewY;
+    editorZoom = clamp(newZoom, 1, 4);
+    editorViewX = worldX - anchor.x / editorZoom;
+    editorViewY = worldY - anchor.y / editorZoom;
+    editorClampView();
+    editorSyncZoomUI();
+    drawEditorCanvas();
+  }
+
+  function editorWheelZoom(e) {
+    if (!editorDraft) return;
+    e.preventDefault();
+    const dir = e.deltaY < 0 ? 1 : -1;
+    editorSetZoom(editorZoom + dir * 0.25, editorCanvasPxFromEvent(e));
   }
 
   function editorObstacleAt(x, y) {
@@ -11490,9 +11857,544 @@
     const arr = editorDraft.walls;
     for (let i = arr.length - 1; i >= 0; i--) {
       const w = arr[i];
-      if (x >= w.minX && x <= w.maxX && y >= w.minY && y <= w.maxY) return i;
+      let qx = x, qy = y;
+      if (w.angle) {
+        const wc = wallCenter(w);
+        const q = editorRotatePoint(x, y, wc.x, wc.y, -w.angle);
+        qx = q.x;
+        qy = q.y;
+      }
+      if (qx >= w.minX && qx <= w.maxX && qy >= w.minY && qy <= w.maxY) return i;
     }
     return -1;
+  }
+
+  function editorDistToSegment(px, py, x1, y1, x2, y2) {
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const lenSq = dx * dx + dy * dy;
+    let t = lenSq > 1e-6 ? ((px - x1) * dx + (py - y1) * dy) / lenSq : 0;
+    t = clamp(t, 0, 1);
+    return len(px - (x1 + dx * t), py - (y1 + dy * t));
+  }
+
+  /** Hit-tests only the two draggable endpoint handles of a crush block
+   *  (its start point and its patrol-end point) — used to start a resize
+   *  drag on one end without moving the whole thing. */
+  function editorMoverHandleAt(x, y) {
+    const arr = editorDraft.movers;
+    for (let i = arr.length - 1; i >= 0; i--) {
+      const m = arr[i];
+      if (len(x - m.x2, y - m.y2) <= 12) return { index: i, handle: "end" };
+      if (len(x - m.x1, y - m.y1) <= 12) return { index: i, handle: "start" };
+    }
+    return null;
+  }
+
+  /** Hit-tests the body of a crush block's patrol line (for whole-block
+   *  drag/erase) rather than its endpoint handles. */
+  function editorMoverBodyAt(x, y) {
+    const arr = editorDraft.movers;
+    for (let i = arr.length - 1; i >= 0; i--) {
+      const m = arr[i];
+      if (editorDistToSegment(x, y, m.x1, m.y1, m.x2, m.y2) <= (m.r || 26)) return i;
+    }
+    return -1;
+  }
+
+  function editorPortalAt(x, y) {
+    const arr = editorDraft.portals;
+    for (let i = arr.length - 1; i >= 0; i--) {
+      if (len(x - arr[i].x, y - arr[i].y) <= (arr[i].r || 22)) return i;
+    }
+    return -1;
+  }
+
+  function editorCritterSpawnAt(x, y) {
+    const arr = editorDraft.critterSpawns;
+    for (let i = arr.length - 1; i >= 0; i--) {
+      if (len(x - arr[i].x, y - arr[i].y) <= 16) return i;
+    }
+    return -1;
+  }
+
+  // ---- Selection / copy-paste / group / resize / rotate ---------------
+  const EDITOR_ITEM_TYPES = ["obstacle", "wall", "spawn", "mover", "portal", "critter"];
+
+  function editorItemsArray(type) {
+    if (type === "obstacle") return editorDraft.obstacles;
+    if (type === "wall") return editorDraft.walls;
+    if (type === "spawn") return editorDraft.spawns;
+    if (type === "mover") return editorDraft.movers;
+    if (type === "portal") return editorDraft.portals;
+    if (type === "critter") return editorDraft.critterSpawns;
+    return [];
+  }
+
+  function editorTypeMax(type) {
+    if (type === "spawn") return CUSTOM_MAP_MAX_SPAWNS;
+    if (type === "mover") return CUSTOM_MAP_MAX_MOVERS;
+    if (type === "portal") return CUSTOM_MAP_MAX_PORTALS;
+    if (type === "critter") return CUSTOM_MAP_MAX_CRITTER_SPAWNS;
+    return Infinity;
+  }
+
+  /** Combined hit-test across every placeable type, in the same priority
+   *  order Erase already uses — the one thing Select, right-click-erase,
+   *  and marquee-selection all need. */
+  function editorItemAt(x, y) {
+    const sHit = editorSpawnAt(x, y);
+    if (sHit >= 0) return { type: "spawn", id: editorDraft.spawns[sHit].id };
+    const oHit = editorObstacleAt(x, y);
+    if (oHit >= 0) return { type: "obstacle", id: editorDraft.obstacles[oHit].id };
+    const wHit = editorWallAt(x, y);
+    if (wHit >= 0) return { type: "wall", id: editorDraft.walls[wHit].id };
+    const moverHandle = editorMoverHandleAt(x, y);
+    const mHit = moverHandle ? moverHandle.index : editorMoverBodyAt(x, y);
+    if (mHit >= 0) return { type: "mover", id: editorDraft.movers[mHit].id };
+    const ptHit = editorPortalAt(x, y);
+    if (ptHit >= 0) return { type: "portal", id: editorDraft.portals[ptHit].id };
+    const cHit = editorCritterSpawnAt(x, y);
+    if (cHit >= 0) return { type: "critter", id: editorDraft.critterSpawns[cHit].id };
+    return null;
+  }
+
+  /** { type, id } refs — this is the literal click/marquee selection.
+   *  Group membership is resolved on demand (see editorExpandGroups) so
+   *  clicking one grouped item always drags/copies/resizes/deletes the
+   *  whole group without editorSelection itself needing to track that. */
+  let editorSelection = [];
+  /** [{ type, data, groupId }] — data is a clone with id/groupId stripped
+   *  so Paste always mints fresh ones instead of colliding with the
+   *  originals. */
+  let editorClipboard = [];
+
+  function editorFindById(type, id) {
+    const arr = editorItemsArray(type);
+    for (let i = 0; i < arr.length; i++) {
+      if (arr[i].id === id) return { arr, index: i, item: arr[i] };
+    }
+    return null;
+  }
+
+  /** Drops selection entries whose item no longer exists, and resolves
+   *  the rest to live { type, id, item } refs. */
+  function editorResolveSelection() {
+    const out = [];
+    editorSelection = editorSelection.filter((ref) => {
+      const found = editorFindById(ref.type, ref.id);
+      if (!found) return false;
+      out.push({ type: ref.type, id: ref.id, item: found.item });
+      return true;
+    });
+    return out;
+  }
+
+  function editorExpandGroups(resolvedItems) {
+    const groupIds = new Set();
+    for (let i = 0; i < resolvedItems.length; i++) {
+      if (resolvedItems[i].item.groupId) groupIds.add(resolvedItems[i].item.groupId);
+    }
+    if (groupIds.size === 0) return resolvedItems;
+    const seen = new Set(resolvedItems.map((r) => r.type + ":" + r.id));
+    const out = resolvedItems.slice();
+    for (let t = 0; t < EDITOR_ITEM_TYPES.length; t++) {
+      const type = EDITOR_ITEM_TYPES[t];
+      const arr = editorItemsArray(type);
+      for (let i = 0; i < arr.length; i++) {
+        const item = arr[i];
+        if (item.groupId && groupIds.has(item.groupId)) {
+          const key = type + ":" + item.id;
+          if (!seen.has(key)) {
+            seen.add(key);
+            out.push({ type, id: item.id, item });
+          }
+        }
+      }
+    }
+    return out;
+  }
+
+  function editorSelectionResolvedExpanded() {
+    return editorExpandGroups(editorResolveSelection());
+  }
+
+  function editorItemBounds(type, item) {
+    if (type === "obstacle") {
+      return { minX: item.x - item.r, maxX: item.x + item.r, minY: item.y - item.r, maxY: item.y + item.r };
+    }
+    if (type === "wall") {
+      if (!item.angle) {
+        return { minX: item.minX, maxX: item.maxX, minY: item.minY, maxY: item.maxY };
+      }
+      // Rotated: the true world footprint is the AABB of its 4 rotated
+      // corners, not the stored (local, unrotated) min/max box.
+      const wc = wallCenter(item);
+      const corners = [
+        [item.minX, item.minY], [item.maxX, item.minY],
+        [item.minX, item.maxY], [item.maxX, item.maxY],
+      ];
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (let i = 0; i < corners.length; i++) {
+        const rp = editorRotatePoint(corners[i][0], corners[i][1], wc.x, wc.y, item.angle);
+        minX = Math.min(minX, rp.x);
+        maxX = Math.max(maxX, rp.x);
+        minY = Math.min(minY, rp.y);
+        maxY = Math.max(maxY, rp.y);
+      }
+      return { minX, maxX, minY, maxY };
+    }
+    if (type === "mover") {
+      const r = item.r || 26;
+      return {
+        minX: Math.min(item.x1, item.x2) - r,
+        maxX: Math.max(item.x1, item.x2) + r,
+        minY: Math.min(item.y1, item.y2) - r,
+        maxY: Math.max(item.y1, item.y2) + r,
+      };
+    }
+    if (type === "portal") {
+      const r = item.r || 22;
+      return { minX: item.x - r, maxX: item.x + r, minY: item.y - r, maxY: item.y + r };
+    }
+    // spawn, critter — plain points, drawn with a fixed-size marker
+    return { minX: item.x - 16, maxX: item.x + 16, minY: item.y - 16, maxY: item.y + 16 };
+  }
+
+  function editorSelectionBounds(resolvedItems) {
+    if (!resolvedItems.length) return null;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (let i = 0; i < resolvedItems.length; i++) {
+      const b = editorItemBounds(resolvedItems[i].type, resolvedItems[i].item);
+      minX = Math.min(minX, b.minX);
+      minY = Math.min(minY, b.minY);
+      maxX = Math.max(maxX, b.maxX);
+      maxY = Math.max(maxY, b.maxY);
+    }
+    return { minX, minY, maxX, maxY, cx: (minX + maxX) / 2, cy: (minY + maxY) / 2 };
+  }
+
+  function editorSelectionHandlePositions(bounds) {
+    return {
+      nw: { x: bounds.minX, y: bounds.minY },
+      ne: { x: bounds.maxX, y: bounds.minY },
+      sw: { x: bounds.minX, y: bounds.maxY },
+      se: { x: bounds.maxX, y: bounds.maxY },
+      rotate: { x: bounds.cx, y: bounds.minY - 28 },
+    };
+  }
+
+  function editorHandleAt(x, y) {
+    if (editorTool !== "select") return null;
+    const resolved = editorSelectionResolvedExpanded();
+    const bounds = editorSelectionBounds(resolved);
+    if (!bounds) return null;
+    const hp = editorSelectionHandlePositions(bounds);
+    const corners = ["nw", "ne", "sw", "se"];
+    for (let i = 0; i < corners.length; i++) {
+      const c = corners[i];
+      if (len(x - hp[c].x, y - hp[c].y) <= 10) return { type: "resize", corner: c, bounds };
+    }
+    if (len(x - hp.rotate.x, y - hp.rotate.y) <= 10) return { type: "rotate", bounds };
+    return null;
+  }
+
+  function editorRotatePoint(px, py, cx, cy, angle) {
+    const dx = px - cx;
+    const dy = py - cy;
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    return { x: cx + dx * cos - dy * sin, y: cy + dx * sin + dy * cos };
+  }
+
+  function editorApplyTranslatedGeometry(item, type, orig, dx, dy) {
+    if (type === "wall") {
+      item.minX = orig.minX + dx;
+      item.maxX = orig.maxX + dx;
+      item.minY = orig.minY + dy;
+      item.maxY = orig.maxY + dy;
+    } else if (type === "mover") {
+      item.x1 = orig.x1 + dx;
+      item.x2 = orig.x2 + dx;
+      item.y1 = orig.y1 + dy;
+      item.y2 = orig.y2 + dy;
+    } else {
+      item.x = orig.x + dx;
+      item.y = orig.y + dy;
+    }
+  }
+
+  /** Uniform scale about a fixed anchor point (the corner opposite the
+   *  handle being dragged) — every item in the selection scales by the
+   *  same factor, position and size alike, so a multi-item resize keeps
+   *  everyone's relative layout intact. */
+  function editorApplyScaledGeometry(item, type, orig, anchor, scale) {
+    const sx = (x) => anchor.x + (x - anchor.x) * scale;
+    const sy = (y) => anchor.y + (y - anchor.y) * scale;
+    if (type === "obstacle") {
+      item.x = sx(orig.x);
+      item.y = sy(orig.y);
+      item.r = clamp(orig.r * scale, 6, 200);
+    } else if (type === "wall") {
+      if (orig.angle) {
+        // Uniform scale commutes with rotation — scale the (frame-
+        // independent) center point as a plain point, and the local
+        // half-extents by the same factor, then rebuild around that
+        // center with the angle untouched.
+        const wc = wallCenter(orig);
+        const nc = { x: sx(wc.x), y: sy(wc.y) };
+        const halfW = ((orig.maxX - orig.minX) / 2) * scale;
+        const halfH = ((orig.maxY - orig.minY) / 2) * scale;
+        item.minX = nc.x - halfW;
+        item.maxX = nc.x + halfW;
+        item.minY = nc.y - halfH;
+        item.maxY = nc.y + halfH;
+        item.angle = orig.angle;
+      } else {
+        const x0 = sx(orig.minX), x1 = sx(orig.maxX);
+        const y0 = sy(orig.minY), y1 = sy(orig.maxY);
+        item.minX = Math.min(x0, x1);
+        item.maxX = Math.max(x0, x1);
+        item.minY = Math.min(y0, y1);
+        item.maxY = Math.max(y0, y1);
+      }
+    } else if (type === "mover") {
+      item.x1 = sx(orig.x1);
+      item.y1 = sy(orig.y1);
+      item.x2 = sx(orig.x2);
+      item.y2 = sy(orig.y2);
+      item.r = clamp((orig.r || 26) * scale, 6, 120);
+    } else if (type === "portal") {
+      item.x = sx(orig.x);
+      item.y = sy(orig.y);
+      item.r = clamp((orig.r || 22) * scale, 8, 80);
+    } else {
+      // spawn, critter — plain points, nothing to resize but position
+      item.x = sx(orig.x);
+      item.y = sy(orig.y);
+    }
+  }
+
+  /** Rotate about the selection's own center. Everything except walls
+   *  turns freely; walls snap to the nearest 90° so they stay perfectly
+   *  axis-aligned — collision code everywhere else in the game assumes
+   *  that, and this way it never has to change. */
+  function editorApplyRotatedGeometry(item, type, orig, cx, cy, delta) {
+    if (type === "wall") {
+      // Snap to 45° steps (in exact eighth-turn integers, so repeated
+      // rotates never drift off the grid the way accumulating radians
+      // could). Eighths 0/2/4/6 (0°/90°/180°/270°) stay perfectly
+      // axis-aligned — baked straight into a swapped min/max box, angle
+      // cleared, identical to how this worked before 45° existed. Odd
+      // eighths (45°/135°/225°/315°) keep the original footprint and
+      // carry a real angle, so rendering and collision both treat it as
+      // the true rotated rectangle it looks like.
+      const EIGHTH = Math.PI / 4;
+      const deltaEighths = Math.round(delta / EIGHTH);
+      const snappedDelta = deltaEighths * EIGHTH;
+      const origEighths = orig.angle ? Math.round(orig.angle / EIGHTH) : 0;
+      const totalEighths = (((origEighths + deltaEighths) % 8) + 8) % 8;
+      const wcx = (orig.minX + orig.maxX) / 2;
+      const wcy = (orig.minY + orig.maxY) / 2;
+      const rp = editorRotatePoint(wcx, wcy, cx, cy, snappedDelta);
+      const halfW = (orig.maxX - orig.minX) / 2;
+      const halfH = (orig.maxY - orig.minY) / 2;
+      if (totalEighths % 2 === 0) {
+        const swapped = (totalEighths / 2) % 2 === 1;
+        const nHalfW = swapped ? halfH : halfW;
+        const nHalfH = swapped ? halfW : halfH;
+        item.minX = rp.x - nHalfW;
+        item.maxX = rp.x + nHalfW;
+        item.minY = rp.y - nHalfH;
+        item.maxY = rp.y + nHalfH;
+        delete item.angle;
+      } else {
+        item.minX = rp.x - halfW;
+        item.maxX = rp.x + halfW;
+        item.minY = rp.y - halfH;
+        item.maxY = rp.y + halfH;
+        item.angle = totalEighths * EIGHTH;
+      }
+    } else if (type === "mover") {
+      const p1 = editorRotatePoint(orig.x1, orig.y1, cx, cy, delta);
+      const p2 = editorRotatePoint(orig.x2, orig.y2, cx, cy, delta);
+      item.x1 = p1.x;
+      item.y1 = p1.y;
+      item.x2 = p2.x;
+      item.y2 = p2.y;
+    } else {
+      const rp = editorRotatePoint(orig.x, orig.y, cx, cy, delta);
+      item.x = rp.x;
+      item.y = rp.y;
+    }
+  }
+
+  function editorSnapshotResolved(resolved) {
+    return resolved.map((r) => ({ type: r.type, id: r.id, geo: JSON.parse(JSON.stringify(r.item)) }));
+  }
+
+  function editorEraseSelection() {
+    const resolved = editorSelectionResolvedExpanded();
+    if (!resolved.length) return;
+    pushEditorUndo();
+    for (let i = 0; i < resolved.length; i++) {
+      const arr = editorItemsArray(resolved[i].type);
+      const idx = arr.findIndex((it) => it.id === resolved[i].id);
+      if (idx >= 0) arr.splice(idx, 1);
+    }
+    editorSelection = [];
+    drawEditorCanvas();
+  }
+
+  function editorCopySelection() {
+    const resolved = editorSelectionResolvedExpanded();
+    if (!resolved.length) return;
+    editorClipboard = resolved.map((r) => {
+      const clone = JSON.parse(JSON.stringify(r.item));
+      delete clone.id;
+      const groupId = clone.groupId || null;
+      delete clone.groupId;
+      return { type: r.type, data: clone, groupId };
+    });
+    editorSyncSelectionUI();
+  }
+
+  function editorPasteClipboard() {
+    if (!editorClipboard.length || !editorDraft) return;
+    pushEditorUndo();
+    const OFFSET = 24;
+    const groupMap = new Map();
+    const newSelection = [];
+    for (let i = 0; i < editorClipboard.length; i++) {
+      const entry = editorClipboard[i];
+      const arr = editorItemsArray(entry.type);
+      if (arr.length >= editorTypeMax(entry.type)) continue;
+      const item = JSON.parse(JSON.stringify(entry.data));
+      item.id = nextEditorItemId();
+      if (entry.groupId) {
+        if (!groupMap.has(entry.groupId)) groupMap.set(entry.groupId, nextEditorItemId());
+        item.groupId = groupMap.get(entry.groupId);
+      }
+      if (entry.type === "wall") {
+        item.minX += OFFSET;
+        item.maxX += OFFSET;
+        item.minY += OFFSET;
+        item.maxY += OFFSET;
+      } else if (entry.type === "mover") {
+        item.x1 += OFFSET;
+        item.x2 += OFFSET;
+        item.y1 += OFFSET;
+        item.y2 += OFFSET;
+      } else {
+        item.x += OFFSET;
+        item.y += OFFSET;
+      }
+      arr.push(item);
+      newSelection.push({ type: entry.type, id: item.id });
+    }
+    editorSelection = newSelection;
+    drawEditorCanvas();
+  }
+
+  function editorGroupSelection() {
+    const resolved = editorSelectionResolvedExpanded();
+    if (resolved.length < 2) return;
+    pushEditorUndo();
+    const gid = nextEditorItemId();
+    for (let i = 0; i < resolved.length; i++) resolved[i].item.groupId = gid;
+    drawEditorCanvas();
+  }
+
+  function editorUngroupSelection() {
+    const resolved = editorSelectionResolvedExpanded();
+    if (!resolved.length) return;
+    pushEditorUndo();
+    for (let i = 0; i < resolved.length; i++) delete resolved[i].item.groupId;
+    drawEditorCanvas();
+  }
+
+  function editorSyncSelectionUI() {
+    const resolved = editorSelectionResolvedExpanded();
+    const n = resolved.length;
+    if (btnEditorCopy) btnEditorCopy.disabled = n === 0;
+    if (btnEditorPaste) btnEditorPaste.disabled = editorClipboard.length === 0;
+    if (btnEditorGroup) btnEditorGroup.disabled = n < 2;
+    if (btnEditorUngroup) btnEditorUngroup.disabled = !resolved.some((r) => r.item.groupId);
+    if (editorSelectionCountEl) {
+      editorSelectionCountEl.textContent =
+        n === 0 ? "Nothing selected" : n + " item" + (n === 1 ? "" : "s") + " selected";
+    }
+  }
+
+  function editorSelectPointerDown(e, p) {
+    const handle = editorHandleAt(p.x, p.y);
+    if (handle) {
+      // Undo push is deferred to the first real pointermove (see below) —
+      // a handle grab that never actually moves (a stray click) shouldn't
+      // eat an undo step for a change that never happened.
+      const resolved = editorSelectionResolvedExpanded();
+      const snapshot = editorSnapshotResolved(resolved);
+      if (handle.type === "resize") {
+        const b = handle.bounds;
+        const anchor =
+          handle.corner === "se" ? { x: b.minX, y: b.minY } :
+          handle.corner === "sw" ? { x: b.maxX, y: b.minY } :
+          handle.corner === "ne" ? { x: b.minX, y: b.maxY } :
+          { x: b.maxX, y: b.maxY };
+        const startDist = Math.max(1, len(p.x - anchor.x, p.y - anchor.y));
+        editorDrag = { type: "select-resize", anchor, startDist, snapshot, undoPushed: false };
+      } else {
+        const b = handle.bounds;
+        editorDrag = {
+          type: "select-rotate",
+          cx: b.cx,
+          cy: b.cy,
+          startAngle: Math.atan2(p.y - b.cy, p.x - b.cx),
+          snapshot,
+          undoPushed: false,
+        };
+      }
+      return;
+    }
+    const hit = editorItemAt(p.x, p.y);
+    if (hit) {
+      const alreadySelected = editorSelection.some((s) => s.type === hit.type && s.id === hit.id);
+      if (e.shiftKey) {
+        editorSelection = alreadySelected
+          ? editorSelection.filter((s) => !(s.type === hit.type && s.id === hit.id))
+          : editorSelection.concat([{ type: hit.type, id: hit.id }]);
+        editorSyncSelectionUI();
+        drawEditorCanvas();
+        return;
+      }
+      if (!alreadySelected) editorSelection = [{ type: hit.type, id: hit.id }];
+      // Same deferred-undo reasoning as the handle case above — a plain
+      // click-to-select (pointerdown+pointerup, no drag) is by far the
+      // most common Select interaction and must stay a total no-op.
+      const resolved = editorSelectionResolvedExpanded();
+      editorDrag = {
+        type: "select-move",
+        startX: p.x,
+        startY: p.y,
+        undoPushed: false,
+        snapshot: editorSnapshotResolved(resolved),
+      };
+      editorSyncSelectionUI();
+      drawEditorCanvas();
+      return;
+    }
+    editorDrag = {
+      type: "select-marquee",
+      x0: p.x,
+      y0: p.y,
+      rect: { minX: p.x, minY: p.y, maxX: p.x, maxY: p.y },
+      additive: e.shiftKey,
+    };
+    if (!e.shiftKey) {
+      editorSelection = [];
+      editorSyncSelectionUI();
+    }
+    drawEditorCanvas();
   }
 
   function drawEditorCanvas() {
@@ -11501,6 +12403,13 @@
     c.clearRect(0, 0, W, H);
     c.fillStyle = "#05060a";
     c.fillRect(0, 0, W, H);
+
+    // Everything below is drawn in world/map coordinates, unchanged from
+    // before zoom existed — this single transform (identity at 1x) is
+    // the only thing that makes it pan/zoom.
+    c.save();
+    c.scale(editorZoom, editorZoom);
+    c.translate(-editorViewX, -editorViewY);
 
     const geo = editorArenaGeometry();
     c.save();
@@ -11523,8 +12432,21 @@
     c.lineWidth = 1.5;
     for (let i = 0; i < editorDraft.walls.length; i++) {
       const w = editorDraft.walls[i];
-      c.fillRect(w.minX, w.minY, w.maxX - w.minX, w.maxY - w.minY);
-      c.strokeRect(w.minX, w.minY, w.maxX - w.minX, w.maxY - w.minY);
+      const wid = w.maxX - w.minX;
+      const hgt = w.maxY - w.minY;
+      if (w.angle) {
+        const wc = wallCenter(w);
+        c.save();
+        c.translate(wc.x, wc.y);
+        c.rotate(w.angle);
+        c.translate(-wc.x, -wc.y);
+        c.fillRect(w.minX, w.minY, wid, hgt);
+        c.strokeRect(w.minX, w.minY, wid, hgt);
+        c.restore();
+      } else {
+        c.fillRect(w.minX, w.minY, wid, hgt);
+        c.strokeRect(w.minX, w.minY, wid, hgt);
+      }
     }
     if (editorDrag && editorDrag.type === "wall-draw") {
       const r = editorDrag.rect;
@@ -11565,36 +12487,215 @@
       c.fillText("P" + (i + 1), s.x, s.y);
     }
 
+    // Crush blocks (movers) — patrol line plus a start handle sized to
+    // the block's real radius and a small end handle for resizing.
+    for (let i = 0; i < editorDraft.movers.length; i++) {
+      const m = editorDraft.movers[i];
+      c.setLineDash([6, 5]);
+      c.strokeStyle = "rgba(251, 146, 60, 0.55)";
+      c.lineWidth = 2;
+      c.beginPath();
+      c.moveTo(m.x1, m.y1);
+      c.lineTo(m.x2, m.y2);
+      c.stroke();
+      c.setLineDash([]);
+      c.beginPath();
+      c.arc(m.x1, m.y1, m.r || 26, 0, Math.PI * 2);
+      c.fillStyle = "rgba(251, 146, 60, 0.35)";
+      c.fill();
+      c.strokeStyle = "rgba(253, 186, 116, 0.9)";
+      c.lineWidth = 2;
+      c.stroke();
+      c.beginPath();
+      c.arc(m.x2, m.y2, 7, 0, Math.PI * 2);
+      c.fillStyle = "rgba(253, 186, 116, 0.9)";
+      c.fill();
+    }
+
+    // Warp gates (portals) — placed in linked pairs by order; a color
+    // cycles per pair with a dashed link line, and a trailing unpaired
+    // gate (odd count) renders dim/dashed to flag it as inactive.
+    const portalHues = [
+      "rgba(168, 85, 247,",
+      "rgba(56, 189, 248,",
+      "rgba(244, 114, 182,",
+      "rgba(250, 204, 21,",
+    ];
+    for (let i = 0; i < editorDraft.portals.length; i += 2) {
+      const a = editorDraft.portals[i];
+      const b = editorDraft.portals[i + 1];
+      const hue = portalHues[(i / 2) % portalHues.length];
+      if (b) {
+        c.setLineDash([4, 6]);
+        c.strokeStyle = hue + " 0.4)";
+        c.lineWidth = 1.5;
+        c.beginPath();
+        c.moveTo(a.x, a.y);
+        c.lineTo(b.x, b.y);
+        c.stroke();
+        c.setLineDash([]);
+      }
+      const pts = b ? [a, b] : [a];
+      for (let pi = 0; pi < pts.length; pi++) {
+        const pt = pts[pi];
+        c.beginPath();
+        c.arc(pt.x, pt.y, pt.r || 22, 0, Math.PI * 2);
+        c.fillStyle = b ? hue + " 0.3)" : "rgba(148, 163, 184, 0.2)";
+        c.fill();
+        c.strokeStyle = b ? hue + " 0.9)" : "rgba(148, 163, 184, 0.7)";
+        c.lineWidth = 2;
+        if (!b) c.setLineDash([3, 3]);
+        c.stroke();
+        c.setLineDash([]);
+      }
+    }
+
+    // Critter spawns
+    for (let i = 0; i < editorDraft.critterSpawns.length; i++) {
+      const s = editorDraft.critterSpawns[i];
+      c.beginPath();
+      c.arc(s.x, s.y, 13, 0, Math.PI * 2);
+      c.fillStyle = "rgba(120, 200, 100, 0.3)";
+      c.fill();
+      c.strokeStyle = "rgba(163, 230, 141, 0.9)";
+      c.lineWidth = 2;
+      c.stroke();
+      c.fillStyle = "#e8ecf4";
+      c.font = "bold 11px system-ui, sans-serif";
+      c.textAlign = "center";
+      c.textBaseline = "middle";
+      c.fillText("C", s.x, s.y);
+    }
+
+    // Selection highlights, bounding box, and resize/rotate handles —
+    // only while the Select tool is active.
+    if (editorTool === "select") {
+      const resolved = editorSelectionResolvedExpanded();
+      c.strokeStyle = "rgba(255, 255, 255, 0.9)";
+      c.lineWidth = 2;
+      c.setLineDash([4, 3]);
+      for (let i = 0; i < resolved.length; i++) {
+        const b = editorItemBounds(resolved[i].type, resolved[i].item);
+        c.strokeRect(b.minX - 4, b.minY - 4, b.maxX - b.minX + 8, b.maxY - b.minY + 8);
+      }
+      c.setLineDash([]);
+      const bounds = editorSelectionBounds(resolved);
+      if (bounds) {
+        if (resolved.length > 1) {
+          c.strokeStyle = "rgba(125, 211, 252, 0.85)";
+          c.lineWidth = 1.5;
+          c.setLineDash([6, 4]);
+          c.strokeRect(
+            bounds.minX - 8,
+            bounds.minY - 8,
+            bounds.maxX - bounds.minX + 16,
+            bounds.maxY - bounds.minY + 16
+          );
+          c.setLineDash([]);
+        }
+        const hp = editorSelectionHandlePositions(bounds);
+        c.beginPath();
+        c.moveTo(hp.rotate.x, bounds.minY - 8);
+        c.lineTo(hp.rotate.x, hp.rotate.y);
+        c.strokeStyle = "rgba(125, 211, 252, 0.6)";
+        c.lineWidth = 1.5;
+        c.stroke();
+        const corners = ["nw", "ne", "sw", "se"];
+        c.fillStyle = "rgba(125, 211, 252, 0.95)";
+        c.strokeStyle = "#05060a";
+        c.lineWidth = 1.5;
+        for (let i = 0; i < corners.length; i++) {
+          const pos = hp[corners[i]];
+          c.beginPath();
+          c.rect(pos.x - 6, pos.y - 6, 12, 12);
+          c.fill();
+          c.stroke();
+        }
+        c.beginPath();
+        c.arc(hp.rotate.x, hp.rotate.y, 7, 0, Math.PI * 2);
+        c.fillStyle = "rgba(125, 211, 252, 0.95)";
+        c.fill();
+        c.strokeStyle = "#05060a";
+        c.stroke();
+      }
+      if (editorDrag && editorDrag.type === "select-marquee") {
+        const r = editorDrag.rect;
+        c.fillStyle = "rgba(125, 211, 252, 0.12)";
+        c.strokeStyle = "rgba(125, 211, 252, 0.7)";
+        c.setLineDash([4, 4]);
+        c.fillRect(r.minX, r.minY, r.maxX - r.minX, r.maxY - r.minY);
+        c.strokeRect(r.minX, r.minY, r.maxX - r.minX, r.maxY - r.minY);
+        c.setLineDash([]);
+      }
+    }
+
+    c.restore();
+
+    editorSyncSelectionUI();
+
     if (editorSpawnCountEl) {
-      editorSpawnCountEl.textContent =
-        editorDraft.spawns.length + " spawn point" +
-        (editorDraft.spawns.length === 1 ? "" : "s") + " placed";
+      const spawnCount = editorDraft.spawns.length;
+      const moverCount = editorDraft.movers.length;
+      const portalCount = editorDraft.portals.length;
+      const portalPairs = Math.floor(portalCount / 2);
+      const portalOdd = portalCount % 2 === 1;
+      const critterCount = editorDraft.critterSpawns.length;
+      let txt =
+        spawnCount + " spawn point" + (spawnCount === 1 ? "" : "s") + " • " +
+        moverCount + " crush block" + (moverCount === 1 ? "" : "s") + " • " +
+        portalPairs + " warp gate pair" + (portalPairs === 1 ? "" : "s") +
+        (portalOdd ? " (+1 unpaired)" : "") + " • " +
+        critterCount + " critter spawn" + (critterCount === 1 ? "" : "s");
+      editorSpawnCountEl.textContent = txt;
     }
   }
 
   function editorPointerDown(e) {
     if (!editorDraft) return;
+    if (e.button > 0) return; // right/middle click is handled by editorContextMenu
     editorCanvas.setPointerCapture(e.pointerId);
+    if (editorTool === "pan") {
+      // Pure view navigation — doesn't touch editorDraft, so it shouldn't
+      // eat an undo step the way every real edit below does.
+      editorDrag = {
+        type: "pan",
+        startPx: editorCanvasPxFromEvent(e),
+        startViewX: editorViewX,
+        startViewY: editorViewY,
+      };
+      return;
+    }
+    if (editorTool === "select") {
+      // Handles its own undo pushes (only for the drag types that actually
+      // mutate editorDraft — click/marquee selection alone doesn't).
+      editorSelectPointerDown(e, editorPointFromEvent(e));
+      return;
+    }
+    pushEditorUndo();
     const p = editorPointFromEvent(e);
     if (editorTool === "obstacle") {
       const hit = editorObstacleAt(p.x, p.y);
       if (hit >= 0) {
         editorDrag = { type: "obstacle", index: hit };
       } else {
-        editorDraft.obstacles.push({ x: p.x, y: p.y, r: editorObstacleRadius });
+        editorDraft.obstacles.push({ id: nextEditorItemId(), x: p.x, y: p.y, r: editorObstacleRadius });
         editorDrag = { type: "obstacle", index: editorDraft.obstacles.length - 1 };
       }
     } else if (editorTool === "wall") {
       const hit = editorWallAt(p.x, p.y);
       if (hit >= 0) {
         const w = editorDraft.walls[hit];
+        // Offset from the wall's own center rather than its minX/minY —
+        // the center's world position holds still under rotation, so this
+        // drag stays correct however the wall is angled.
+        const wc = wallCenter(w);
         editorDrag = {
           type: "wall-move",
           index: hit,
-          offX: p.x - w.minX,
-          offY: p.y - w.minY,
-          w: w.maxX - w.minX,
-          h: w.maxY - w.minY,
+          offX: p.x - wc.x,
+          offY: p.y - wc.y,
+          halfW: (w.maxX - w.minX) / 2,
+          halfH: (w.maxY - w.minY) / 2,
         };
       } else {
         editorDrag = { type: "wall-draw", x0: p.x, y0: p.y, rect: { minX: p.x, minY: p.y, maxX: p.x, maxY: p.y } };
@@ -11604,29 +12705,158 @@
       if (hit >= 0) {
         editorDrag = { type: "spawn", index: hit };
       } else if (editorDraft.spawns.length < CUSTOM_MAP_MAX_SPAWNS) {
-        editorDraft.spawns.push({ x: p.x, y: p.y });
+        editorDraft.spawns.push({ id: nextEditorItemId(), x: p.x, y: p.y });
         editorDrag = { type: "spawn", index: editorDraft.spawns.length - 1 };
       }
-    } else if (editorTool === "erase") {
-      const sHit = editorSpawnAt(p.x, p.y);
-      if (sHit >= 0) {
-        editorDraft.spawns.splice(sHit, 1);
+    } else if (editorTool === "mover") {
+      const handle = editorMoverHandleAt(p.x, p.y);
+      if (handle) {
+        editorDrag = { type: "mover-" + handle.handle, index: handle.index };
       } else {
-        const oHit = editorObstacleAt(p.x, p.y);
-        if (oHit >= 0) {
-          editorDraft.obstacles.splice(oHit, 1);
-        } else {
-          const wHit = editorWallAt(p.x, p.y);
-          if (wHit >= 0) editorDraft.walls.splice(wHit, 1);
+        const bodyHit = editorMoverBodyAt(p.x, p.y);
+        if (bodyHit >= 0) {
+          const m = editorDraft.movers[bodyHit];
+          editorDrag = {
+            type: "mover-move",
+            index: bodyHit,
+            offX: p.x - m.x1,
+            offY: p.y - m.y1,
+            dx: m.x2 - m.x1,
+            dy: m.y2 - m.y1,
+          };
+        } else if (editorDraft.movers.length < CUSTOM_MAP_MAX_MOVERS) {
+          editorDraft.movers.push({ id: nextEditorItemId(), x1: p.x, y1: p.y, x2: p.x, y2: p.y, r: 26, speed: 100 });
+          editorDrag = { type: "mover-end", index: editorDraft.movers.length - 1 };
         }
       }
+    } else if (editorTool === "portal") {
+      const hit = editorPortalAt(p.x, p.y);
+      if (hit >= 0) {
+        editorDrag = { type: "portal", index: hit };
+      } else if (editorDraft.portals.length < CUSTOM_MAP_MAX_PORTALS) {
+        editorDraft.portals.push({ id: nextEditorItemId(), x: p.x, y: p.y, r: 22 });
+        editorDrag = { type: "portal", index: editorDraft.portals.length - 1 };
+      }
+    } else if (editorTool === "critter") {
+      const hit = editorCritterSpawnAt(p.x, p.y);
+      if (hit >= 0) {
+        editorDrag = { type: "critter", index: hit };
+      } else if (editorDraft.critterSpawns.length < CUSTOM_MAP_MAX_CRITTER_SPAWNS) {
+        editorDraft.critterSpawns.push({ id: nextEditorItemId(), x: p.x, y: p.y });
+        editorDrag = { type: "critter", index: editorDraft.critterSpawns.length - 1 };
+      }
+    } else if (editorTool === "erase") {
+      editorEraseAtPoint(p.x, p.y);
     }
+    drawEditorCanvas();
+  }
+
+  /** Deletes whatever's under (x,y), checking each placeable type in turn —
+   *  shared by the Erase tool and the right-click-to-delete shortcut so
+   *  right-click works no matter which tool is currently selected. */
+  function editorEraseAtPoint(x, y) {
+    const sHit = editorSpawnAt(x, y);
+    if (sHit >= 0) {
+      editorDraft.spawns.splice(sHit, 1);
+      return;
+    }
+    const oHit = editorObstacleAt(x, y);
+    if (oHit >= 0) {
+      editorDraft.obstacles.splice(oHit, 1);
+      return;
+    }
+    const wHit = editorWallAt(x, y);
+    if (wHit >= 0) {
+      editorDraft.walls.splice(wHit, 1);
+      return;
+    }
+    const moverHandle = editorMoverHandleAt(x, y);
+    const mHit = moverHandle ? moverHandle.index : editorMoverBodyAt(x, y);
+    if (mHit >= 0) {
+      editorDraft.movers.splice(mHit, 1);
+      return;
+    }
+    const ptHit = editorPortalAt(x, y);
+    if (ptHit >= 0) {
+      editorDraft.portals.splice(ptHit, 1);
+      return;
+    }
+    const cHit = editorCritterSpawnAt(x, y);
+    if (cHit >= 0) editorDraft.critterSpawns.splice(cHit, 1);
+  }
+
+  function editorContextMenu(e) {
+    e.preventDefault();
+    if (!editorDraft) return;
+    const p = editorPointFromEvent(e);
+    pushEditorUndo();
+    editorEraseAtPoint(p.x, p.y);
     drawEditorCanvas();
   }
 
   function editorPointerMove(e) {
     if (!editorDrag || !editorDraft) return;
+    if (editorDrag.type === "pan") {
+      const px = editorCanvasPxFromEvent(e);
+      editorViewX = editorDrag.startViewX - (px.x - editorDrag.startPx.x) / editorZoom;
+      editorViewY = editorDrag.startViewY - (px.y - editorDrag.startPx.y) / editorZoom;
+      editorClampView();
+      drawEditorCanvas();
+      return;
+    }
     const p = editorPointFromEvent(e);
+    if (editorDrag.type === "select-move") {
+      const dx = p.x - editorDrag.startX;
+      const dy = p.y - editorDrag.startY;
+      if (!editorDrag.undoPushed && (dx !== 0 || dy !== 0)) {
+        pushEditorUndo();
+        editorDrag.undoPushed = true;
+      }
+      for (let i = 0; i < editorDrag.snapshot.length; i++) {
+        const snap = editorDrag.snapshot[i];
+        const found = editorFindById(snap.type, snap.id);
+        if (found) editorApplyTranslatedGeometry(found.item, snap.type, snap.geo, dx, dy);
+      }
+      drawEditorCanvas();
+      return;
+    } else if (editorDrag.type === "select-resize") {
+      const curDist = Math.max(1, len(p.x - editorDrag.anchor.x, p.y - editorDrag.anchor.y));
+      const scale = clamp(curDist / editorDrag.startDist, 0.2, 6);
+      if (!editorDrag.undoPushed && Math.abs(scale - 1) > 1e-6) {
+        pushEditorUndo();
+        editorDrag.undoPushed = true;
+      }
+      for (let i = 0; i < editorDrag.snapshot.length; i++) {
+        const snap = editorDrag.snapshot[i];
+        const found = editorFindById(snap.type, snap.id);
+        if (found) editorApplyScaledGeometry(found.item, snap.type, snap.geo, editorDrag.anchor, scale);
+      }
+      drawEditorCanvas();
+      return;
+    } else if (editorDrag.type === "select-rotate") {
+      const curAngle = Math.atan2(p.y - editorDrag.cy, p.x - editorDrag.cx);
+      const delta = curAngle - editorDrag.startAngle;
+      if (!editorDrag.undoPushed && Math.abs(delta) > 1e-6) {
+        pushEditorUndo();
+        editorDrag.undoPushed = true;
+      }
+      for (let i = 0; i < editorDrag.snapshot.length; i++) {
+        const snap = editorDrag.snapshot[i];
+        const found = editorFindById(snap.type, snap.id);
+        if (found) editorApplyRotatedGeometry(found.item, snap.type, snap.geo, editorDrag.cx, editorDrag.cy, delta);
+      }
+      drawEditorCanvas();
+      return;
+    } else if (editorDrag.type === "select-marquee") {
+      editorDrag.rect = {
+        minX: Math.min(editorDrag.x0, p.x),
+        minY: Math.min(editorDrag.y0, p.y),
+        maxX: Math.max(editorDrag.x0, p.x),
+        maxY: Math.max(editorDrag.y0, p.y),
+      };
+      drawEditorCanvas();
+      return;
+    }
     if (editorDrag.type === "obstacle") {
       const o = editorDraft.obstacles[editorDrag.index];
       if (o) {
@@ -11642,12 +12872,12 @@
     } else if (editorDrag.type === "wall-move") {
       const w = editorDraft.walls[editorDrag.index];
       if (w) {
-        const nx = clamp(p.x - editorDrag.offX, 0, W - editorDrag.w);
-        const ny = clamp(p.y - editorDrag.offY, 0, H - editorDrag.h);
-        w.minX = nx;
-        w.minY = ny;
-        w.maxX = nx + editorDrag.w;
-        w.maxY = ny + editorDrag.h;
+        const cx = clamp(p.x - editorDrag.offX, 0, W);
+        const cy = clamp(p.y - editorDrag.offY, 0, H);
+        w.minX = cx - editorDrag.halfW;
+        w.maxX = cx + editorDrag.halfW;
+        w.minY = cy - editorDrag.halfH;
+        w.maxY = cy + editorDrag.halfH;
       }
     } else if (editorDrag.type === "wall-draw") {
       editorDrag.rect = {
@@ -11656,21 +12886,94 @@
         maxX: Math.max(editorDrag.x0, p.x),
         maxY: Math.max(editorDrag.y0, p.y),
       };
+    } else if (editorDrag.type === "mover-start") {
+      const m = editorDraft.movers[editorDrag.index];
+      if (m) {
+        m.x1 = clamp(p.x, 0, W);
+        m.y1 = clamp(p.y, 0, H);
+      }
+    } else if (editorDrag.type === "mover-end") {
+      const m = editorDraft.movers[editorDrag.index];
+      if (m) {
+        m.x2 = clamp(p.x, 0, W);
+        m.y2 = clamp(p.y, 0, H);
+      }
+    } else if (editorDrag.type === "mover-move") {
+      const m = editorDraft.movers[editorDrag.index];
+      if (m) {
+        const nx1 = clamp(p.x - editorDrag.offX, 0, W);
+        const ny1 = clamp(p.y - editorDrag.offY, 0, H);
+        m.x1 = nx1;
+        m.y1 = ny1;
+        m.x2 = nx1 + editorDrag.dx;
+        m.y2 = ny1 + editorDrag.dy;
+      }
+    } else if (editorDrag.type === "portal") {
+      const pt = editorDraft.portals[editorDrag.index];
+      if (pt) {
+        pt.x = clamp(p.x, 0, W);
+        pt.y = clamp(p.y, 0, H);
+      }
+    } else if (editorDrag.type === "critter") {
+      const s = editorDraft.critterSpawns[editorDrag.index];
+      if (s) {
+        s.x = clamp(p.x, 0, W);
+        s.y = clamp(p.y, 0, H);
+      }
     }
     drawEditorCanvas();
   }
 
   function editorPointerUp() {
+    if (editorDrag && editorDrag.type === "select-marquee" && editorDraft) {
+      const r = editorDrag.rect;
+      const found = [];
+      for (let t = 0; t < EDITOR_ITEM_TYPES.length; t++) {
+        const type = EDITOR_ITEM_TYPES[t];
+        const arr = editorItemsArray(type);
+        for (let i = 0; i < arr.length; i++) {
+          const b = editorItemBounds(type, arr[i]);
+          const cx = (b.minX + b.maxX) / 2;
+          const cy = (b.minY + b.maxY) / 2;
+          if (cx >= r.minX && cx <= r.maxX && cy >= r.minY && cy <= r.maxY) {
+            found.push({ type, id: arr[i].id });
+          }
+        }
+      }
+      if (editorDrag.additive) {
+        for (let i = 0; i < found.length; i++) {
+          const f = found[i];
+          if (!editorSelection.some((s) => s.type === f.type && s.id === f.id)) editorSelection.push(f);
+        }
+      } else {
+        editorSelection = found;
+      }
+      editorSyncSelectionUI();
+    }
     if (editorDrag && editorDrag.type === "wall-draw" && editorDraft) {
       const r = editorDrag.rect;
       const w = Math.max(20, r.maxX - r.minX);
       const h = Math.max(20, r.maxY - r.minY);
       editorDraft.walls.push({
+        id: nextEditorItemId(),
         minX: r.minX,
         minY: r.minY,
         maxX: r.minX + w,
         maxY: r.minY + h,
       });
+    }
+    if (
+      editorDrag &&
+      (editorDrag.type === "mover-end" || editorDrag.type === "mover-start") &&
+      editorDraft
+    ) {
+      // A plain click (no real drag) would otherwise leave a zero-length
+      // patrol that never moves — give it a default rightward patrol span.
+      const m = editorDraft.movers[editorDrag.index];
+      if (m && len(m.x2 - m.x1, m.y2 - m.y1) < 40) {
+        m.x2 = m.x1 + 60;
+        m.y2 = m.y1;
+      }
     }
     editorDrag = null;
     drawEditorCanvas();
@@ -11685,6 +12988,7 @@
         btns[i].getAttribute("data-tool") === tool
       );
     }
+    if (editorCanvas) editorCanvas.classList.toggle("panning", tool === "pan");
   }
 
   function renderEditorMapList() {
@@ -11706,11 +13010,13 @@
       delBtn.className = "map-delete";
       delBtn.textContent = "Delete";
       delBtn.addEventListener("click", () => {
+        if (!window.confirm('Delete the map "' + m.name + '"? This can\'t be undone.')) return;
         customMaps.splice(i, 1);
         persistCustomMaps();
         if (activeCustomMapId === m.id) activeCustomMapId = null;
         if (editorDraft && editorDraft.id === m.id) {
           editorDraft = blankCustomMap("New map");
+          editorResetView();
           syncEditorInputsFromDraft();
         }
         renderEditorMapList();
@@ -11731,20 +13037,41 @@
         shapeBtns[i].getAttribute("data-shape") === editorDraft.bounds
       );
     }
-    const moversCb = document.getElementById("editor-hz-movers");
-    const portalsCb = document.getElementById("editor-hz-portals");
-    const crittersCb = document.getElementById("editor-hz-critters");
-    if (moversCb) moversCb.checked = !!editorDraft.movers;
-    if (portalsCb) portalsCb.checked = !!editorDraft.portals;
-    if (crittersCb) crittersCb.checked = !!editorDraft.creatures;
+    if (editorCritterDifficultySelect) {
+      editorCritterDifficultySelect.value = editorDraft.critterDifficulty || "normal";
+    }
+    const stats = editorDraft.critterCustomStats;
+    if (editorCritterHpInput) editorCritterHpInput.value = String(stats.hp);
+    if (editorCritterSpeedInput) editorCritterSpeedInput.value = String(stats.speed);
+    if (editorCritterDamageInput) editorCritterDamageInput.value = String(stats.damage);
+    updateEditorCritterStatLabels();
+    updateEditorCritterCustomVisibility();
     setEditorTool("obstacle");
+  }
+
+  function updateEditorCritterCustomVisibility() {
+    if (editorCritterCustomWrap) {
+      editorCritterCustomWrap.hidden =
+        !editorDraft || editorDraft.critterDifficulty !== "custom";
+    }
+  }
+
+  function updateEditorCritterStatLabels() {
+    if (!editorDraft) return;
+    const stats = editorDraft.critterCustomStats;
+    if (editorCritterHpValueEl) editorCritterHpValueEl.textContent = String(stats.hp);
+    if (editorCritterSpeedValueEl) editorCritterSpeedValueEl.textContent = String(stats.speed);
+    if (editorCritterDamageValueEl) editorCritterDamageValueEl.textContent = String(stats.damage);
   }
 
   function openMapEditor(mapId) {
     const existing = mapId ? customMaps.find((m) => m.id === mapId) : null;
     editorDraft = existing
-      ? JSON.parse(JSON.stringify(existing))
+      ? normalizeCustomMap(JSON.parse(JSON.stringify(existing)))
       : blankCustomMap("New map");
+    editorUndoStack.length = 0;
+    updateEditorUndoButton();
+    editorResetView();
     editorPickerOpen = true;
     modePickerOpen = false;
     mapPickerOpen = false;
@@ -11770,7 +13097,30 @@
     editorCanvas.addEventListener("pointermove", editorPointerMove);
     editorCanvas.addEventListener("pointerup", editorPointerUp);
     editorCanvas.addEventListener("pointercancel", editorPointerUp);
+    editorCanvas.addEventListener("contextmenu", editorContextMenu);
+    editorCanvas.addEventListener("wheel", editorWheelZoom, { passive: false });
   }
+  if (editorZoomInput) {
+    editorZoomInput.addEventListener("input", () => {
+      editorSetZoom(parseFloat(editorZoomInput.value) || 1);
+    });
+  }
+  if (btnEditorZoomIn) {
+    btnEditorZoomIn.addEventListener("click", () => editorSetZoom(editorZoom + 0.25));
+  }
+  if (btnEditorZoomOut) {
+    btnEditorZoomOut.addEventListener("click", () => editorSetZoom(editorZoom - 0.25));
+  }
+  if (btnEditorZoomReset) {
+    btnEditorZoomReset.addEventListener("click", () => {
+      editorResetView();
+      drawEditorCanvas();
+    });
+  }
+  if (btnEditorCopy) btnEditorCopy.addEventListener("click", editorCopySelection);
+  if (btnEditorPaste) btnEditorPaste.addEventListener("click", editorPasteClipboard);
+  if (btnEditorGroup) btnEditorGroup.addEventListener("click", editorGroupSelection);
+  if (btnEditorUngroup) btnEditorUngroup.addEventListener("click", editorUngroupSelection);
   const editorToolBtns = document.querySelectorAll(".editor-tool[data-tool]");
   for (let i = 0; i < editorToolBtns.length; i++) {
     editorToolBtns[i].addEventListener("click", () => {
@@ -11781,6 +13131,7 @@
   for (let i = 0; i < editorShapeBtns.length; i++) {
     editorShapeBtns[i].addEventListener("click", () => {
       if (!editorDraft) return;
+      pushEditorUndo();
       editorDraft.bounds = editorShapeBtns[i].getAttribute("data-shape");
       for (let j = 0; j < editorShapeBtns.length; j++) {
         editorShapeBtns[j].classList.toggle("selected", editorShapeBtns[j] === editorShapeBtns[i]);
@@ -11794,22 +13145,33 @@
       if (editorRadiusValueEl) editorRadiusValueEl.textContent = String(editorObstacleRadius);
     });
   }
-  const editorHzMovers = document.getElementById("editor-hz-movers");
-  const editorHzPortals = document.getElementById("editor-hz-portals");
-  const editorHzCritters = document.getElementById("editor-hz-critters");
-  if (editorHzMovers) {
-    editorHzMovers.addEventListener("change", () => {
-      if (editorDraft) editorDraft.movers = editorHzMovers.checked;
+  if (editorCritterDifficultySelect) {
+    editorCritterDifficultySelect.addEventListener("change", () => {
+      if (!editorDraft) return;
+      pushEditorUndo();
+      editorDraft.critterDifficulty = editorCritterDifficultySelect.value;
+      updateEditorCritterCustomVisibility();
     });
   }
-  if (editorHzPortals) {
-    editorHzPortals.addEventListener("change", () => {
-      if (editorDraft) editorDraft.portals = editorHzPortals.checked;
+  if (editorCritterHpInput) {
+    editorCritterHpInput.addEventListener("input", () => {
+      if (!editorDraft) return;
+      editorDraft.critterCustomStats.hp = parseFloat(editorCritterHpInput.value) || 1;
+      updateEditorCritterStatLabels();
     });
   }
-  if (editorHzCritters) {
-    editorHzCritters.addEventListener("change", () => {
-      if (editorDraft) editorDraft.creatures = editorHzCritters.checked;
+  if (editorCritterSpeedInput) {
+    editorCritterSpeedInput.addEventListener("input", () => {
+      if (!editorDraft) return;
+      editorDraft.critterCustomStats.speed = parseFloat(editorCritterSpeedInput.value) || CREATURE_SPEED;
+      updateEditorCritterStatLabels();
+    });
+  }
+  if (editorCritterDamageInput) {
+    editorCritterDamageInput.addEventListener("input", () => {
+      if (!editorDraft) return;
+      editorDraft.critterCustomStats.damage = parseFloat(editorCritterDamageInput.value) || CREATURE_TOUCH_DAMAGE;
+      updateEditorCritterStatLabels();
     });
   }
   if (editorMapNameInput) {
@@ -11819,11 +13181,16 @@
   }
   if (btnEditorNew) {
     btnEditorNew.addEventListener("click", () => {
+      pushEditorUndo();
       editorDraft = blankCustomMap("New map");
+      editorResetView();
       syncEditorInputsFromDraft();
       renderEditorMapList();
       drawEditorCanvas();
     });
+  }
+  if (btnEditorUndo) {
+    btnEditorUndo.addEventListener("click", undoEditorAction);
   }
   if (btnEditorSave) {
     btnEditorSave.addEventListener("click", () => {
@@ -12158,6 +13525,11 @@
     }
     if (playPanel) playPanel.hidden = pick !== "play";
     if (settingsPanel) settingsPanel.hidden = pick !== "settings";
+    // Preview the real ULT/menu touch buttons — at their real computed
+    // size and position — behind the settings panel while its touch
+    // sliders are in view, so size/height/swap changes are visible
+    // immediately without needing to start a match to check them.
+    if (touchControlsEl) touchControlsEl.classList.toggle("preview", pick === "settings");
   }
 
   function initSettingsUI() {
@@ -12615,7 +13987,40 @@
           minY: w.minY,
           maxX: w.maxX,
           maxY: w.maxY,
+          angle: w.angle || 0,
         });
+      }
+      const moverDefs = Array.isArray(activeCustom.movers) ? activeCustom.movers : [];
+      for (let i = 0; i < moverDefs.length; i++) {
+        const mv = moverDefs[i];
+        const dx = mv.x2 - mv.x1;
+        const dy = mv.y2 - mv.y1;
+        const dist = len(dx, dy) || 1;
+        const speed = mv.speed || 100;
+        mapRuntime.movers.push({
+          x: mv.x1,
+          y: mv.y1,
+          r: mv.r || 26,
+          vx: (dx / dist) * speed,
+          vy: (dy / dist) * speed,
+          minX: Math.min(mv.x1, mv.x2),
+          maxX: Math.max(mv.x1, mv.x2),
+          minY: Math.min(mv.y1, mv.y2),
+          maxY: Math.max(mv.y1, mv.y2),
+        });
+      }
+      const portalDefs = Array.isArray(activeCustom.portals) ? activeCustom.portals : [];
+      for (let i = 0; i + 1 < portalDefs.length; i += 2) {
+        const a = portalDefs[i];
+        const b = portalDefs[i + 1];
+        mapRuntime.portals.push(
+          { x: a.x, y: a.y, r: a.r || 22, tx: b.x, ty: b.y },
+          { x: b.x, y: b.y, r: b.r || 22, tx: a.x, ty: a.y }
+        );
+      }
+      if (Array.isArray(activeCustom.critterSpawns) && activeCustom.critterSpawns.length) {
+        mapRuntime.critterSpawnPoints = activeCustom.critterSpawns.slice();
+        activeCritterStats = critterStatsForMap(activeCustom);
       }
     }
     if (gameMode === "horde") resetHordeState();
@@ -12760,6 +14165,9 @@
     tickBulwarkRegen(p, dt);
     tickPhoenixRevive(p, dt);
     tickBulwarkBarrage(p, dt);
+    if ((p.phoenixFacingHoldT || 0) > 0) {
+      p.phoenixFacingHoldT = Math.max(0, p.phoenixFacingHoldT - dt);
+    }
     if (!p.isBot) tickUltimateState(p, dt);
     if ((p.marionetteUltWindupT || 0) > 0) {
       p.vx = 0;
@@ -12945,6 +14353,11 @@
     // moving during recovery to stay under the sp>8 movement-facing gate).
     if (isPike(p) && p.attackT > 0 && p.lanceSwingFacing != null) {
       p.facing = p.lanceSwingFacing;
+    }
+    // Phoenix's backward-hop facing hold: keep the just-finished dash's
+    // facing a moment longer instead of snapping straight back to aim.
+    if (isPhoenix(p) && (p.phoenixFacingHoldT || 0) > 0 && p.phoenixDashFacing != null) {
+      p.facing = p.phoenixDashFacing;
     }
 
     if (isSiphon(p) && (p.siphonUltPullT || 0) > 0) {
@@ -15025,7 +16438,12 @@
     }
 
     if (best) {
-      if (p.attackStyle === "phoenix" && p.chargeT <= 0 && !isDashing(p)) {
+      if (
+        p.attackStyle === "phoenix" &&
+        p.chargeT <= 0 &&
+        !isDashing(p) &&
+        (p.phoenixFacingHoldT || 0) <= 0
+      ) {
         allyAiFacePhoenixTarget(p, best);
       } else if (
         p.attackStyle === "dash" &&
@@ -15503,6 +16921,7 @@
     // Ult (Rebirth) keeps dashing forward, unchanged; the normal hop now
     // dashes backward to match its shots firing forward instead of behind.
     const dashForward = phoenixUltAttackActive(p);
+    p.phoenixDashBackward = !dashForward;
     const dashAngle = dashForward ? p.facing : p.facing + Math.PI;
     let dirX = Math.cos(dashAngle);
     let dirY = Math.sin(dashAngle);
@@ -15652,6 +17071,10 @@
     if (p.dashTraveled >= p.dashDist - 1e-3 || p.dashT <= 0) {
       p.dashT = 0;
       p.attackT = 0;
+      if (isPhoenix(p) && p.phoenixDashBackward) {
+        p.phoenixFacingHoldT = PHOENIX_FACING_HOLD_EXTRA;
+        p.phoenixDashFacing = p.facing;
+      }
       finishDashCooldown(p);
     }
   }
@@ -15951,6 +17374,44 @@
       hitR = MARIONETTE_NEEDLE_HIT_R;
     }
     const maxDist = rangedDistForPlayer(p, r);
+
+    if (echo) {
+      // Twin pistols: two parallel bolts spawned off to either side of
+      // center (matching the model's dual sidearms) instead of one bolt
+      // from the middle. Each does half a normal shot's damage/knockback
+      // so landing both feels the same as the old single hit did.
+      const perp = ang + Math.PI / 2;
+      const perpOffset = PLAYER_R * 0.5;
+      const forward = PLAYER_R + 4;
+      for (let side = -1; side <= 1; side += 2) {
+        const ox = p.x + Math.cos(ang) * forward + Math.cos(perp) * perpOffset * side;
+        const oy = p.y + Math.sin(ang) * forward + Math.sin(perp) * perpOffset * side;
+        projectiles.push({
+          kind: "echo",
+          pelletIdx: side < 0 ? 0 : 1,
+          x: ox,
+          y: oy,
+          px: ox,
+          py: oy,
+          spawnX: ox,
+          spawnY: oy,
+          vx: Math.cos(ang) * speed,
+          vy: Math.sin(ang) * speed,
+          baseSpeed: speed,
+          age: 0,
+          ownerNum: p.playerNum,
+          swingId: p.swingId,
+          baseDamage: p.swingDamage * 0.5,
+          knockMul: p.swingKnockMul * 0.5,
+          maxDist,
+          traveled: 0,
+          r: hitR,
+          color: p.color,
+        });
+      }
+      return;
+    }
+
     const ox = p.x + Math.cos(ang) * (PLAYER_R + 6);
     const oy = p.y + Math.sin(ang) * (PLAYER_R + 6);
     projectiles.push({
@@ -15960,9 +17421,7 @@
           ? "siphon"
           : marionette
             ? "needle"
-            : echo
-              ? "echo"
-              : "ranged",
+            : "ranged",
       x: ox,
       y: oy,
       px: ox,
@@ -16184,19 +17643,31 @@
   }
 
   function mapWallBounceNormal(hx, hy, w, pad) {
+    const ang = w.angle || 0;
+    let qx = hx, qy = hy;
+    if (ang) {
+      const wc = wallCenter(w);
+      const q = rotateAroundCenter(hx, hy, wc.x, wc.y, -ang);
+      qx = q.x;
+      qy = q.y;
+    }
     const left = w.minX - pad;
     const right = w.maxX + pad;
     const top = w.minY - pad;
     const bottom = w.maxY + pad;
-    const dL = Math.abs(hx - left);
-    const dR = Math.abs(hx - right);
-    const dT = Math.abs(hy - top);
-    const dB = Math.abs(hy - bottom);
+    const dL = Math.abs(qx - left);
+    const dR = Math.abs(qx - right);
+    const dT = Math.abs(qy - top);
+    const dB = Math.abs(qy - bottom);
     const m = Math.min(dL, dR, dT, dB);
-    if (m === dL) return { nx: -1, ny: 0 };
-    if (m === dR) return { nx: 1, ny: 0 };
-    if (m === dT) return { nx: 0, ny: -1 };
-    return { nx: 0, ny: 1 };
+    const n =
+      m === dL ? { nx: -1, ny: 0 } :
+      m === dR ? { nx: 1, ny: 0 } :
+      m === dT ? { nx: 0, ny: -1 } :
+      { nx: 0, ny: 1 };
+    if (!ang) return n;
+    const wn = rotateVector(n.nx, n.ny, ang);
+    return { nx: wn.x, ny: wn.y };
   }
 
   /** Labyrinth (and any mapRuntime.walls) — sweep + overlap so thin panels register. */
@@ -16222,11 +17693,22 @@
       let bestNy = 0;
       for (let i = 0; i < walls.length; i++) {
         const w = walls[i];
+        const ang = w.angle || 0;
+        let rsx = sx, rsy = sy, rdx = dirX, rdy = dirY;
+        if (ang) {
+          const wc = wallCenter(w);
+          const rp = rotateAroundCenter(sx, sy, wc.x, wc.y, -ang);
+          rsx = rp.x;
+          rsy = rp.y;
+          const rv = rotateVector(dirX, dirY, -ang);
+          rdx = rv.x;
+          rdy = rv.y;
+        }
         const t = rayDistToAabb(
-          sx,
-          sy,
-          dirX,
-          dirY,
+          rsx,
+          rsy,
+          rdx,
+          rdy,
           w.minX - bodyR,
           w.minY - bodyR,
           w.maxX + bodyR,
@@ -16255,34 +17737,49 @@
       let hit = false;
       for (let i = 0; i < walls.length; i++) {
         const w = walls[i];
+        const ang = w.angle || 0;
+        const wc = ang ? wallCenter(w) : null;
+        const qp = ang ? rotateAroundCenter(pr.x, pr.y, wc.x, wc.y, -ang) : { x: pr.x, y: pr.y };
+        let qx = qp.x, qy = qp.y;
         const left = w.minX - bodyR;
         const right = w.maxX + bodyR;
         const top = w.minY - bodyR;
         const bottom = w.maxY + bodyR;
-        if (pr.x < left || pr.x > right || pr.y < top || pr.y > bottom) continue;
-        const penL = pr.x - left;
-        const penR = right - pr.x;
-        const penT = pr.y - top;
-        const penB = bottom - pr.y;
+        if (qx < left || qx > right || qy < top || qy > bottom) continue;
+        const penL = qx - left;
+        const penR = right - qx;
+        const penT = qy - top;
+        const penB = bottom - qy;
         const minPen = Math.min(penL, penR, penT, penB);
         let nx;
         let ny;
         if (minPen === penL) {
-          pr.x = left;
+          qx = left;
           nx = -1;
           ny = 0;
         } else if (minPen === penR) {
-          pr.x = right;
+          qx = right;
           nx = 1;
           ny = 0;
         } else if (minPen === penT) {
-          pr.y = top;
+          qy = top;
           nx = 0;
           ny = -1;
         } else {
-          pr.y = bottom;
+          qy = bottom;
           nx = 0;
           ny = 1;
+        }
+        if (ang) {
+          const wp = rotateAroundCenter(qx, qy, wc.x, wc.y, ang);
+          pr.x = wp.x;
+          pr.y = wp.y;
+          const wn = rotateVector(nx, ny, ang);
+          nx = wn.x;
+          ny = wn.y;
+        } else {
+          pr.x = qx;
+          pr.y = qy;
         }
         const dot = pr.vx * nx + pr.vy * ny;
         if (dot < 0) {
@@ -17072,12 +18569,20 @@
     const walls = mapRuntime.walls;
     for (let i = 0; i < walls.length; i++) {
       const w = walls[i];
+      const wid = w.maxX - w.minX;
+      const hgt = w.maxY - w.minY;
       ctx.save();
+      if (w.angle) {
+        const wc = wallCenter(w);
+        ctx.translate(wc.x, wc.y);
+        ctx.rotate(w.angle);
+        ctx.translate(-wc.x, -wc.y);
+      }
       ctx.fillStyle = "rgba(38, 48, 68, 0.98)";
-      ctx.fillRect(w.minX, w.minY, w.maxX - w.minX, w.maxY - w.minY);
+      ctx.fillRect(w.minX, w.minY, wid, hgt);
       ctx.strokeStyle = "rgba(130, 155, 200, 0.35)";
       ctx.lineWidth = 1;
-      ctx.strokeRect(w.minX, w.minY, w.maxX - w.minX, w.maxY - w.minY);
+      ctx.strokeRect(w.minX, w.minY, wid, hgt);
       ctx.restore();
     }
 
@@ -17872,6 +19377,19 @@
       ctx.moveTo(x0, 0);
       ctx.lineTo(range, 0);
       ctx.stroke();
+      // Spearhead glint — a bright four-point flash at the tip, sharpest on
+      // a fully charged thrust, so the point of impact itself reads as
+      // distinctly "Pike" rather than just a plain tapered wedge.
+      const glintR = (6 + 6 * ratio) * (0.5 + 0.5 * t);
+      ctx.globalAlpha = (0.5 + 0.5 * ratio) * (0.4 + 0.6 * t);
+      ctx.strokeStyle = "#fff";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(range - glintR, 0);
+      ctx.lineTo(range + glintR, 0);
+      ctx.moveTo(range, -glintR);
+      ctx.lineTo(range, glintR);
+      ctx.stroke();
       ctx.restore();
       return;
     }
@@ -17912,6 +19430,15 @@
       ctx.fillStyle = p.color;
       ctx.globalAlpha = 0.55;
       ctx.fill();
+      // Cross-slash accent — a short perpendicular tick through the blade
+      // line at the leading tip, reading as a blade cut rather than a bolt.
+      ctx.strokeStyle = "#fff";
+      ctx.lineWidth = 2;
+      ctx.globalAlpha = 0.5 + 0.4 * (1 - t);
+      ctx.beginPath();
+      ctx.moveTo(PLAYER_R * 0.6, -7);
+      ctx.lineTo(PLAYER_R * 0.6, 7);
+      ctx.stroke();
       ctx.restore();
       return;
     }
@@ -17933,6 +19460,21 @@
       ctx.strokeStyle = p.color;
       ctx.lineWidth = 3 + 2 * (1 - t);
       ctx.globalAlpha = 0.5 + 0.4 * t;
+      ctx.stroke();
+      // Shield ward — an octagon ring echoing Bulwark's own body shape,
+      // instead of just another plain circle.
+      ctx.globalAlpha = 0.35 + 0.3 * t;
+      ctx.strokeStyle = "#fff";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      for (let oi = 0; oi < 8; oi++) {
+        const oa = (Math.PI / 8) + (oi * Math.PI) / 4;
+        const ox = Math.cos(oa) * radius * 0.86;
+        const oy = Math.sin(oa) * radius * 0.86;
+        if (oi === 0) ctx.moveTo(ox, oy);
+        else ctx.lineTo(ox, oy);
+      }
+      ctx.closePath();
       ctx.stroke();
       ctx.restore();
       return;
@@ -17958,6 +19500,22 @@
       ctx.strokeStyle = p.color;
       ctx.lineWidth = 2;
       ctx.stroke();
+      // Tracer streaks — a few bright rounds mid-flight through the cone,
+      // giving the barrage a rapid-fire feel instead of a static wedge.
+      const trSpin = performance.now() * 0.02;
+      ctx.strokeStyle = "#fff";
+      ctx.lineCap = "round";
+      for (let ti = 0; ti < 3; ti++) {
+        const ta = -cone + ((ti + ((trSpin + ti * 3.1) % 1)) / 3) * (cone * 2);
+        const tr0 = range * 0.25;
+        const tr1 = range * (0.55 + 0.35 * ((trSpin * 1.7 + ti) % 1));
+        ctx.globalAlpha = (0.3 + 0.4 * t) * (0.4 + 0.6 * ((trSpin * 1.3 + ti * 0.5) % 1));
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.moveTo(Math.cos(ta) * tr0, Math.sin(ta) * tr0);
+        ctx.lineTo(Math.cos(ta) * tr1, Math.sin(ta) * tr1);
+        ctx.stroke();
+      }
       ctx.restore();
       return;
     }
@@ -17980,6 +19538,21 @@
       ctx.strokeStyle = p.color;
       ctx.lineWidth = 2 + 1.5 * p.lastSwingChargeRatio;
       ctx.stroke();
+      // Pellet burst — a handful of little shard dots scattered through the
+      // cone (positions hashed from swingId so they hold still for the
+      // whole swing instead of jittering frame to frame), matching the
+      // shard-shaped pellet projectiles themselves.
+      ctx.fillStyle = "#fff";
+      for (let si = 0; si < 6; si++) {
+        const h1 = Math.sin((p.swingId || 0) * 12.9898 + si * 78.233) * 43758.5453;
+        const h2 = Math.sin((p.swingId || 0) * 39.346 + si * 11.135) * 24634.634;
+        const sa = (h1 - Math.floor(h1) - 0.5) * arc;
+        const sr = (0.35 + (h2 - Math.floor(h2)) * 0.6) * range;
+        ctx.globalAlpha = (0.35 + 0.45 * t) * 0.8;
+        ctx.beginPath();
+        ctx.arc(Math.cos(sa) * sr, Math.sin(sa) * sr, 1.8, 0, Math.PI * 2);
+        ctx.fill();
+      }
       ctx.globalAlpha = 1;
       ctx.restore();
       return;
@@ -18008,6 +19581,14 @@
       ctx.globalAlpha = 0.2 + 0.35 * t;
       ctx.fillStyle = p.color;
       ctx.fill();
+      // Shockwave ring — a bright pulse racing outward with the burst so
+      // the nova reads as one detonation, not just a set of static spikes.
+      ctx.beginPath();
+      ctx.arc(0, 0, range * (0.7 + 0.3 * t), 0, Math.PI * 2);
+      ctx.globalAlpha = (1 - t) * 0.5;
+      ctx.strokeStyle = "#fff";
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
       ctx.restore();
       return;
     }
@@ -18045,6 +19626,22 @@
     ctx.moveTo(0, 0);
     ctx.lineTo(Math.cos(edge) * range, Math.sin(edge) * range);
     ctx.stroke();
+    // Brawler's signature: a knuckle-impact burst fanning out from the
+    // leading edge, growing sharper as the swing nears its end — this is
+    // the plain fallback every other melee/area style has its own take on
+    // (lance glint, barrage tracers, aura ward, etc.), so it earns one too.
+    const impactT = 1 - t;
+    ctx.globalAlpha = 0.25 + 0.55 * impactT;
+    ctx.lineWidth = 2;
+    for (let bi = 0; bi < 5; bi++) {
+      const ba = edge + (bi - 2) * 0.22;
+      const r0 = range * (0.76 + 0.06 * impactT);
+      const r1 = range * (0.94 + 0.16 * impactT);
+      ctx.beginPath();
+      ctx.moveTo(Math.cos(ba) * r0, Math.sin(ba) * r0);
+      ctx.lineTo(Math.cos(ba) * r1, Math.sin(ba) * r1);
+      ctx.stroke();
+    }
     ctx.globalAlpha = 1;
     ctx.restore();
   }
