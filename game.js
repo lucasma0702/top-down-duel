@@ -542,6 +542,11 @@
    *  bolt damage gets an explicit cut here rather than sharing whatever the
    *  regular charged-shot scaling happens to land on. */
   const RICOCHET_ULT_DAMAGE_MUL = 0.7;
+  /** Recoil: every hit an ult bolt lands on an enemy also dings Ricochet
+   *  themself for this fraction of that hit's damage — a small self-cost
+   *  for how much damage the ult can rack up bouncing around. Regular
+   *  (non-ult) bolts don't have this. */
+  const RICOCHET_ULT_SELF_DAMAGE_MUL = 0.05;
   /** Prism Cascade — each wall bounce nudges the bolt's new direction this
    *  many radians toward the nearest valid enemy, instead of a pure
    *  physics reflection. Small per bounce; compounds over a bolt's many
@@ -807,6 +812,11 @@
    *  since a mouse can whip the target angle around far more abruptly. */
   const LASER_ULT_TURN_SPEED = 3;
   const LASER_ULT_MOUSE_TURN_SPEED = 1.5;
+  /** Regular (non-ult) beam re-aim turn rate, touch controls only — see the
+   *  touchAimId branch below. Keyboard/mouse/gamepad keep the beam locked
+   *  to its starting direction; touch's fire "button" is the aim stick
+   *  itself, so there's no way to pre-aim before the charge starts. */
+  const LASER_CHARGE_TOUCH_TURN_SPEED = 3;
   /** Self-drain while hitting off-center (scales with how far from beam core). */
   const LASER_OFF_CENTER_DRAIN_PER_SEC = 4.2;
   const LASER_MOVE_MUL = 0.72;
@@ -920,10 +930,10 @@
       id: "phoenix",
       name: "Phoenix",
       attackStyle: "phoenix",
-      maxHp: 50,
+      maxHp: 60,
       moveSpeedMul: 1.02,
       attackDamageMul: 0.9,
-      desc: "58 HP — back-hop & forward flame bolts. <strong>Ult</strong>: Rebirth — big damage buff + forward dash & narrower bolts; rise once if slain soon after.",
+      desc: "69 HP — back-hop & forward flame bolts. <strong>Ult</strong>: Rebirth — big damage buff + forward dash & narrower bolts; rise once if slain soon after.",
       tint: "#f97316",
     },
     echo: {
@@ -2421,6 +2431,13 @@
   let touchAimOriginX = 0;
   let touchAimOriginY = 0;
   let touchAimAngleLive = null;
+  /** "Quick aim": snapshotted once at touchstart, pointing at whatever was
+   *  the nearest enemy at that instant — lets a plain tap/hold (no swipe)
+   *  fire or charge toward a real target instead of whatever direction the
+   *  fighter last happened to be facing. It never re-tracks the target
+   *  (see updateAimOverrides) and gets superseded the moment the touch
+   *  actually drags past the aim deadzone (touchAimAngleLive takes over). */
+  let touchQuickAimAngle = null;
   let touchUltHeld = false;
 
   let modePickerOpen = true;
@@ -5658,6 +5675,14 @@
           p.aimOverrideAngle = touchAimAngleLive;
           continue;
         }
+        if (touchAimId != null && touchQuickAimAngle != null) {
+          // Tapped/held without swiping — quick-aim at whatever was the
+          // nearest enemy the instant the touch landed. Snapshotted once in
+          // the touchstart handler, not re-tracked here, so it holds still
+          // even if that enemy moves afterward.
+          p.aimOverrideAngle = touchQuickAimAngle;
+          continue;
+        }
         // A gamepad assigned to P1 takes over aim the same as any other
         // pad-driven slot (handled by the generic loop below) — mouse aim
         // only applies while P1 is still keyboard/mouse.
@@ -5982,6 +6007,19 @@
         touchAimId = t.identifier;
         touchAimOriginX = t.clientX;
         touchAimOriginY = t.clientY;
+        // Fresh touch, fresh aim: don't inherit a swipe angle left over from
+        // the last tap. Snapshot the nearest enemy's direction right now as
+        // the quick-aim fallback — Ricochet opts out since its shots already
+        // home in on the nearest target on their own.
+        touchAimAngleLive = null;
+        touchQuickAimAngle = null;
+        const p1 = players.find((pp) => pp.controls === HUMAN_PRESETS[0].controls);
+        if (p1 && p1.hp > 0 && !isRicochet(p1)) {
+          const target = nearestEnemyFighterTo(p1.x, p1.y, p1);
+          if (target) {
+            touchQuickAimAngle = Math.atan2(target.y - p1.y, target.x - p1.x);
+          }
+        }
         positionTouchKnob(touchAimKnobEl, touchAimOriginX, touchAimOriginY, 0, 0);
         e.preventDefault();
       },
@@ -6008,6 +6046,7 @@
       for (let i = 0; i < e.changedTouches.length; i++) {
         if (e.changedTouches[i].identifier !== touchAimId) continue;
         touchAimId = null;
+        touchQuickAimAngle = null;
         if (touchAimKnobEl) touchAimKnobEl.style.display = "none";
       }
     };
@@ -14845,6 +14884,20 @@
             p.facing += diff;
           }
           p.beamFacing = p.facing;
+        } else if (touchAimId != null && p.controls === HUMAN_PRESETS[0].controls) {
+          // Touch's fire "button" is the aim stick itself (see
+          // syncTouchKeys), so there's no way to commit an aim before the
+          // charge starts like a mouse click or gamepad trigger allows —
+          // let the aim thumb keep steering it while it charges/fires,
+          // same capped turn-rate feel as the ult re-aim above.
+          if (p.aimOverrideAngle != null) {
+            const maxTurn = LASER_CHARGE_TOUCH_TURN_SPEED * dt;
+            let diff = angleDiff(p.aimOverrideAngle, p.facing);
+            if (diff > maxTurn) diff = maxTurn;
+            else if (diff < -maxTurn) diff = -maxTurn;
+            p.facing += diff;
+          }
+          p.beamFacing = p.facing;
         } else if (p.beamFacing != null) {
           p.facing = p.beamFacing;
         }
@@ -18532,6 +18585,11 @@
         knockMul:
           pr.knockMul * (0.055 + 0.012 * (pr.wallBounceIdx || 0)),
       });
+      if (pr.ultShot && owner && hitDmg > 0) {
+        applyDamageTo(owner, null, hitDmg * RICOCHET_ULT_SELF_DAMAGE_MUL, {
+          hitFlash: 0.08,
+        });
+      }
 
       ejectBounceShotFromPlayer(pr, target, true);
       pr.hitSeq = (pr.hitSeq || 0) + 1;
