@@ -669,6 +669,50 @@
       color: var(--muted);
       line-height: 1.45;
     }
+    #gamepad-assign-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    #gamepad-assign-list .gamepad-assign-empty {
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .gamepad-assign-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid var(--glass-border);
+      background: rgba(0, 0, 0, 0.18);
+    }
+    .gamepad-assign-row .gamepad-assign-label {
+      font-size: 12px;
+      color: var(--text);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex: 1;
+    }
+    .gamepad-assign-row select {
+      font-family: inherit;
+      font-size: 12px;
+      padding: 6px 22px 6px 10px;
+      border-radius: 6px;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      background:
+        var(--panel)
+        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238b95a8' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
+        no-repeat right 8px center / 10px 6px;
+      color: var(--text);
+      cursor: pointer;
+      flex-shrink: 0;
+      appearance: none;
+      -webkit-appearance: none;
+      -moz-appearance: none;
+    }
     #char-screen {
       position: absolute;
       inset: 0;
@@ -1658,9 +1702,16 @@
           <input type="checkbox" id="setting-mouse-aim" checked />
           <span class="settings-toggle-text">
             <strong>Mouse aim (P1)</strong>
-            <span>P1 aims with the mouse while WASD moves, instead of facing the movement direction. Left click attacks, right click uses the ultimate (Space/C still work too). Off restores classic keyboard-only controls. Every connected gamepad (PS4/Xbox-style) automatically controls a slot — the 1st pad drives P2, the 2nd drives P3, and so on: left stick move, right stick aim, R2 attack, L2 ult, Square support.</span>
+            <span>P1 aims with the mouse while WASD moves, instead of facing the movement direction. Left click attacks, right click uses the ultimate (Space/C still work too). Off restores classic keyboard-only controls. Only applies while P1 isn't set to a controller below.</span>
           </span>
         </label>
+        <div class="settings-slider" id="gamepad-assign-group">
+          <div class="settings-slider-head">
+            <strong>Controller assignment</strong>
+          </div>
+          <p class="settings-slider-desc">Pick which player slot each connected controller drives — any slot, P1 included. Left stick move, right stick aim, R2 attack, L2 ult, Square support.</p>
+          <div id="gamepad-assign-list"></div>
+        </div>
         <div class="settings-slider" id="touch-size-group">
           <div class="settings-slider-head">
             <strong>Touch control size</strong>

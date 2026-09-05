@@ -323,6 +323,14 @@
   const SHADOW_ATTACK_COOLDOWN = 0.5;
   const SHADOW_MAX_PER_TEAM = 3;
   const RANGED_HIT_R = 12;
+  /** Echo's twin-pistol bolts read as smaller/quicker than a Marksman
+   *  round — this also shrinks the drawn ball, which is sized off pr.r. */
+  const ECHO_HIT_R = 8;
+  /** Within one twin-pistol shot, if BOTH bullets connect on the same
+   *  target, the second one to land only deals this fraction of its own
+   *  (already-halved) damage — softens the easy point-blank double-hit
+   *  without touching landing just one bullet, or hits from a later shot. */
+  const ECHO_SECOND_BULLET_DAMAGE_MUL = 0.75;
   const DASH_DIST_MIN = 58;
   const DASH_DIST_MAX = 132;
   const DASH_SPEED_MIN = 440;
@@ -337,6 +345,12 @@
   const DASH_DAMAGE_IMPERFECT_MUL = 0.64;
   /** Phantom Rush — heal this fraction of max HP on each ult dash hit. */
   const STRIKER_ULT_HIT_HEAL_FRAC = 0.1;
+  /** Striker's plain (non-ult) dash attack — a flat, small heal for landing
+   *  a "perfect" hit (the dash marker on the defender, same timing the
+   *  bonus-damage check already uses). Deliberately tiny next to Phantom
+   *  Rush's own 10%-of-maxHp heal above — this is a minor perk for good
+   *  timing, not a second lifesteal source. */
+  const STRIKER_PERFECT_HIT_HEAL = 1;
   /** Phoenix — quick forward hop; twin bolts launch from behind toward facing. */
   const PHOENIX_DASH_DIST_MIN = 22;
   const PHOENIX_DASH_DIST_MAX = 36;
@@ -361,6 +375,11 @@
    *  buff): attack charges faster and its cooldown shrinks, for the rest of
    *  the match — not just right after reviving. */
   const PHOENIX_REVIVE_CHARGE_SPEED_BONUS_PER = 0.18;
+  /** Same stack counter, same "permanent for the rest of the match" rule —
+   *  attack range (the back-shot's travel distance) and the hop/dash
+   *  distance both creep out a little with every revive. Kept modest
+   *  ("slightly longer") next to the punchier damage/speed bonuses above. */
+  const PHOENIX_REVIVE_RANGE_BONUS_PER = 0.07;
   const PHOENIX_REVIVE_COOLDOWN_REDUCTION_PER = 0.12;
   const PHOENIX_REVIVE_COOLDOWN_MIN_MUL = 0.35;
   /** Temporary burst right after rising from the Rebirth ultimate (not
@@ -517,6 +536,12 @@
   const RICOCHET_ULT_SHOT_COUNT = 5;
   /** Full fan width (radians) for the five ult bolts. */
   const RICOCHET_ULT_SPREAD = 0.58;
+  /** Prism Cascade fires 5 bolts at full-charge damage that keep re-hitting
+   *  indefinitely (every fighter hit resets their lifetime — see
+   *  refreshRicochetLifeOnEnemyHit) with bonus range/bounces on top, so per-
+   *  bolt damage gets an explicit cut here rather than sharing whatever the
+   *  regular charged-shot scaling happens to land on. */
+  const RICOCHET_ULT_DAMAGE_MUL = 0.7;
   /** Prism Cascade — each wall bounce nudges the bolt's new direction this
    *  many radians toward the nearest valid enemy, instead of a pure
    *  physics reflection. Small per bounce; compounds over a bolt's many
@@ -631,6 +656,19 @@
   const CREATURE_SPAWN_JITTER = 1.35;
   const CREATURE_MAX_ALIVE = 10;
   const CREATURE_SPAWN_CLEAR = 20;
+  /** Corpse walls (map modifier): every real death (not a Phoenix Rebirth
+   *  revive, not just going "downed" in Horde) leaves a silent double of
+   *  the fighter behind — same body shape/color as the real thing (see
+   *  drawFighterBody), never acting or moving on its own. It doesn't sit
+   *  as a rigid map obstacle though: walking into one shoves it aside
+   *  (separateCorpsesFromFighters) and taking damage kicks it back with
+   *  real knockback (see damageCorpse), same as any other physical body —
+   *  it just never drives that motion itself. It also has its own HP pool
+   *  (based on the fighter's own max HP) and disappears once that's
+   *  whittled down. */
+  const CORPSE_HP_MUL = 1;
+  const CORPSE_FRICTION = 0.86;
+  const CORPSE_KNOCKBACK_MUL = 0.5;
   const CRITTER_DIFFICULTY_PRESETS = {
     easy: { hp: 1, speed: 90, damage: 2 },
     normal: { hp: CREATURE_MAX_HP, speed: CREATURE_SPEED, damage: CREATURE_TOUCH_DAMAGE },
@@ -1006,6 +1044,11 @@
       name: "Critters",
       desc: "Weak spawns that nip everyone.",
     },
+    {
+      key: "corpses",
+      name: "Corpse walls",
+      desc: "Every death leaves a pushable body that blocks the way.",
+    },
   ];
 
   function defaultMapModifiers() {
@@ -1018,6 +1061,7 @@
       movers: false,
       portals: false,
       creatures: false,
+      corpses: false,
     };
   }
 
@@ -1363,6 +1407,28 @@
   function handleFighterDeath(p, killer) {
     if (p.hp > 0) return;
     if (tryPhoenixUltRebirth(p)) return;
+    // Horde's "downed" state isn't a real death — an ally can still revive
+    // them without a fresh life, so this has to be checked BEFORE the
+    // Phoenix reset below, or merely going down would wrongly wipe stacks
+    // a teammate is about to save anyway.
+    if (gameMode === "horde" && isHordeHero(p)) {
+      hordeEnterDowned(p);
+      grantUltimateKillCharge(killer, p);
+      grantUltimateDeathCharge(p);
+      return;
+    }
+    if (mapModifiers.corpses) {
+      spawnCorpse(
+        p.x,
+        p.y,
+        getPlayerRadius(p),
+        p.maxHp * CORPSE_HP_MUL,
+        p.color,
+        p.characterId,
+        p.facing,
+        p.isBot
+      );
+    }
     // Died without Rebirth saving them (real death this life) — all of
     // Phoenix's permanent revive-stack buffs/bonuses reset, so the next
     // Rebirth revive (in a future life) starts fresh at 75% HP instead of
@@ -1372,12 +1438,6 @@
       p.phoenixRebirthDmgBonus = 0;
       p.phoenixReviveBuffT = 0;
       p.ultDmgMulT = 0;
-    }
-    if (gameMode === "horde" && isHordeHero(p)) {
-      hordeEnterDowned(p);
-      grantUltimateKillCharge(killer, p);
-      grantUltimateDeathCharge(p);
-      return;
     }
     grantUltimateKillCharge(killer, p);
     grantUltimateDeathCharge(p);
@@ -2287,23 +2347,49 @@
   // Gamepad support: left stick moves, right stick aims, R2 attacks,
   // L2 ults, Square supports. Purely additive — arrow-key/WASD-style
   // controls for a pad's slot keep working whether or not a pad is
-  // connected. Every connected pad is supported, not just one — the Nth
-  // connected pad (in raw navigator.getGamepads() order) drives preset
-  // slot N (P2, P3, P4, ...); P1 is reserved for keyboard+mouse. If a
-  // controller disconnects, the remaining ones shift down to fill the gap.
+  // connected. Every connected pad is supported, not just one. By default
+  // the Nth connected pad (in raw navigator.getGamepads() order) drives
+  // preset slot N (P2, P3, P4, ...) — but which slot each pad drives is
+  // fully reassignable (Settings screen), P1 included, via
+  // gamepadSlotAssignment. If a controller disconnects, the remaining
+  // ones shift down to fill the gap in that raw order, same as before.
   const GAMEPAD_MOVE_DEADZONE = 0.25;
   const GAMEPAD_AIM_DEADZONE = 0.35;
   const GAMEPAD_BTN_ATTACK = 7; // R2 / RT
   const GAMEPAD_BTN_ULTIMATE = 6; // L2 / LT
   const GAMEPAD_BTN_SUPPORT = 2; // Square / X
+  const SETTING_GAMEPAD_ASSIGNMENT_KEY = "topDownDuel_gamepadSlotAssignment";
   function makeEmptyGamepadState() {
     return { connected: false, lx: 0, ly: 0, rx: 0, ry: 0, buttons: [] };
   }
-  /** Index 0 (P1) is never populated — pads fill slots 1..N (P2..). */
   let gamepadStates = HUMAN_PRESETS.map(() => makeEmptyGamepadState());
+  /** gamepadSlotAssignment[i] = which player slot (0-based; 0 = P1) the
+   *  i-th currently-connected gamepad (in raw navigator.getGamepads()
+   *  order, compacted) drives. Missing/invalid entries fall back to the
+   *  original default of i+1 (so an unconfigured setup behaves exactly
+   *  like it always did — pad 0 drives P2, pad 1 drives P3, ...). Persisted
+   *  so a chosen assignment survives a reload. */
+  let gamepadSlotAssignment = [];
+  function resolveGamepadTargetSlot(padOrderIndex) {
+    const v = gamepadSlotAssignment[padOrderIndex];
+    if (Number.isInteger(v) && v >= 0 && v < gamepadStates.length) return v;
+    return padOrderIndex + 1;
+  }
+  function saveGamepadSlotAssignment() {
+    try {
+      localStorage.setItem(
+        SETTING_GAMEPAD_ASSIGNMENT_KEY,
+        JSON.stringify(gamepadSlotAssignment)
+      );
+    } catch (e) {
+      /* ignore */
+    }
+  }
   const gamepadStatusEl = document.getElementById("gamepad-status");
   const gamepadStatusTextEl = document.getElementById("gamepad-status-text");
+  const gamepadAssignListEl = document.getElementById("gamepad-assign-list");
   let lastGamepadStatusShown = null; // force the first update through
+  let lastGamepadAssignSignature = null; // force the first render through
   // Mirrors real keyboard state only, separate from `keys` so the gamepad
   // sync below can recompute effective P2 keys each frame without the
   // gamepad's own previous contribution leaking back into itself.
@@ -2374,6 +2460,8 @@
     marionetteBoltNextId: 0,
     marionetteEffigies: [],
     marionetteEffigyNextId: 0,
+    corpses: [],
+    corpseNextId: 0,
   };
 
   /** # = wall, . = floor (15×13). Baked at load: solid # cells, unreachable . → #.
@@ -4725,6 +4813,19 @@
     );
   }
 
+  /** Same stack counter as phoenixReviveDamageMul — permanent, grows with
+   *  every Rebirth revive. Scales both the back-shot's range and (via
+   *  dashDistForPlayer) the hop/dash distance. */
+  function phoenixReviveRangeMul(p) {
+    if (!isPhoenix(p)) return 1;
+    const stacks = p.phoenixReviveStacks || 0;
+    return 1 + stacks * PHOENIX_REVIVE_RANGE_BONUS_PER;
+  }
+
+  function phoenixShotRangeForPlayer(p) {
+    return PHOENIX_SHOT_RANGE * phoenixReviveRangeMul(p);
+  }
+
   function trackPhoenixDamageDealt(attacker, dealt) {
     if (!attacker || dealt <= 0 || attacker.isBot) return;
     grantUltimateCdReduction(attacker, dealt);
@@ -5332,10 +5433,10 @@
     }
   }
 
-  /** Poll every connected gamepad into gamepadStates[1..] (call once/frame).
-   *  Slot 0 (P1) is always left at its empty default — pads only ever
-   *  drive P2 and beyond. */
-  function pollGamepad() {
+  /** Raw connected pads, compacted (no gaps), in navigator.getGamepads()
+   *  order — this fixed order is what pad-assignment indices (both the
+   *  default i+1 and any custom gamepadSlotAssignment entry) are keyed to. */
+  function rawConnectedPads() {
     let pads = [];
     try {
       pads = navigator.getGamepads ? navigator.getGamepads() : [];
@@ -5346,14 +5447,23 @@
     for (let i = 0; i < pads.length; i++) {
       if (pads[i] && pads[i].connected) connectedPads.push(pads[i]);
     }
+    return connectedPads;
+  }
+
+  /** Poll every connected gamepad into whichever player slot it's assigned
+   *  to (see gamepadSlotAssignment / resolveGamepadTargetSlot) — any slot,
+   *  P1 included, can now be pad-driven. Call once/frame. */
+  function pollGamepad() {
+    for (let slot = 0; slot < gamepadStates.length; slot++) {
+      gamepadStates[slot].connected = false;
+    }
+    const connectedPads = rawConnectedPads();
     const dz = (v, d) => (Math.abs(v) < d ? 0 : v);
-    for (let slot = 1; slot < gamepadStates.length; slot++) {
-      const gp = connectedPads[slot - 1];
-      const state = gamepadStates[slot];
-      if (!gp) {
-        state.connected = false;
-        continue;
-      }
+    for (let padOrderIndex = 0; padOrderIndex < connectedPads.length; padOrderIndex++) {
+      const gp = connectedPads[padOrderIndex];
+      const targetSlot = resolveGamepadTargetSlot(padOrderIndex);
+      if (targetSlot < 0 || targetSlot >= gamepadStates.length) continue;
+      const state = gamepadStates[targetSlot];
       const ax = gp.axes || [];
       state.connected = true;
       state.lx = dz(ax[0] || 0, GAMEPAD_MOVE_DEADZONE);
@@ -5391,7 +5501,7 @@
    */
   function connectedGamepadSlots() {
     const slots = [];
-    for (let slot = 1; slot < gamepadStates.length; slot++) {
+    for (let slot = 0; slot < gamepadStates.length; slot++) {
       if (gamepadStates[slot].connected) slots.push(slot);
     }
     return slots;
@@ -5417,6 +5527,59 @@
     }
   }
 
+  function gamepadAssignLabel(gp, padOrderIndex) {
+    // Browsers often stuff a verbose vendor/product id suffix onto the raw
+    // gamepad.id string (e.g. "Xbox Wireless Controller (STANDARD GAMEPAD
+    // Vendor: 045e Product: 02fd)") — trim that off for a cleaner label.
+    const id = (gp && gp.id) || "";
+    const short = id.replace(/\s*\(.*vendor:.*$/i, "").trim();
+    return "Controller " + (padOrderIndex + 1) + (short ? " — " + short : "");
+  }
+
+  /** Rebuilds the Settings-screen "which slot does each controller drive"
+   *  list to match whatever's actually plugged in right now. Cheap to call
+   *  every frame — only touches the DOM when the connected-pad signature
+   *  actually changes. */
+  function renderGamepadAssignUI() {
+    if (!gamepadAssignListEl) return;
+    const pads = rawConnectedPads();
+    const signature = pads.map((gp) => gp.id).join("|");
+    if (signature === lastGamepadAssignSignature) return;
+    lastGamepadAssignSignature = signature;
+    gamepadAssignListEl.innerHTML = "";
+    if (!pads.length) {
+      const empty = document.createElement("p");
+      empty.className = "gamepad-assign-empty";
+      empty.textContent = "No controller connected.";
+      gamepadAssignListEl.appendChild(empty);
+      return;
+    }
+    for (let i = 0; i < pads.length; i++) {
+      const row = document.createElement("div");
+      row.className = "gamepad-assign-row";
+      const label = document.createElement("span");
+      label.className = "gamepad-assign-label";
+      label.textContent = gamepadAssignLabel(pads[i], i);
+      row.appendChild(label);
+      const select = document.createElement("select");
+      select.setAttribute("aria-label", "Player slot for " + label.textContent);
+      for (let slot = 0; slot < HUMAN_PRESETS.length; slot++) {
+        const opt = document.createElement("option");
+        opt.value = String(slot);
+        opt.textContent = "P" + (slot + 1);
+        select.appendChild(opt);
+      }
+      select.value = String(resolveGamepadTargetSlot(i));
+      const padOrderIndex = i;
+      select.addEventListener("change", () => {
+        gamepadSlotAssignment[padOrderIndex] = parseInt(select.value, 10);
+        saveGamepadSlotAssignment();
+      });
+      row.appendChild(select);
+      gamepadAssignListEl.appendChild(row);
+    }
+  }
+
   /**
    * Feed gamepad state into each connected pad's preset key codes so all
    * the existing keys[...] control-reading code (movement, attack charge,
@@ -5425,7 +5588,7 @@
    * stick/button can't get stuck true from a previous frame's contribution.
    */
   function syncGamepadKeys() {
-    for (let slot = 1; slot < gamepadStates.length; slot++) {
+    for (let slot = 0; slot < gamepadStates.length; slot++) {
       const c = HUMAN_PRESETS[slot].controls;
       const codes = [c.up, c.down, c.left, c.right, c.attack, c.support, c.ultimate];
       for (let i = 0; i < codes.length; i++) {
@@ -5454,6 +5617,10 @@
    * released mouse button can't get stuck true.
    */
   function syncMouseButtonKeys() {
+    // If a gamepad is now assigned to P1, syncGamepadKeys() above already
+    // owns P1's key state for this frame — don't stomp its R2/L2
+    // contribution by rebuilding from physKeys here too.
+    if (gamepadStates[0].connected) return;
     const c = HUMAN_PRESETS[0].controls;
     const codes = [c.attack, c.ultimate].filter(Boolean);
     for (let i = 0; i < codes.length; i++) {
@@ -5491,7 +5658,10 @@
           p.aimOverrideAngle = touchAimAngleLive;
           continue;
         }
-        if (useMouseAimP1 && gameMode !== "siege") {
+        // A gamepad assigned to P1 takes over aim the same as any other
+        // pad-driven slot (handled by the generic loop below) — mouse aim
+        // only applies while P1 is still keyboard/mouse.
+        if (useMouseAimP1 && gameMode !== "siege" && !gamepadStates[0].connected) {
           const m = mouseWorldPos();
           if (m) {
             const dx = m.x - p.x;
@@ -5502,7 +5672,7 @@
         }
       }
       let handledByGamepad = false;
-      for (let slot = 1; slot < HUMAN_PRESETS.length; slot++) {
+      for (let slot = 0; slot < HUMAN_PRESETS.length; slot++) {
         if (p.controls !== HUMAN_PRESETS[slot].controls) continue;
         const state = gamepadStates[slot];
         if (!state.connected) break;
@@ -5983,6 +6153,33 @@
     return !!mapModifiers.creatures;
   }
 
+  /** Total obstacle/wall/crush-block area actually placed right now, as a
+   *  fraction of the arena's own area — every one of these is something a
+   *  Ricochet bolt can bounce off (see getCollidableObstacles and
+   *  reflectBounceOffMapWalls), so this is a direct measure of how many
+   *  free bounces this specific layout hands out, procedural or custom. */
+  function mapCoveredAreaRatio() {
+    let covered = 0;
+    const obs = mapRuntime.obstacles;
+    for (let i = 0; i < obs.length; i++) covered += Math.PI * obs[i].r * obs[i].r;
+    const movers = mapRuntime.movers;
+    for (let i = 0; i < movers.length; i++) covered += Math.PI * movers[i].r * movers[i].r;
+    const walls = mapRuntime.walls;
+    for (let i = 0; i < walls.length; i++) {
+      const w = walls[i];
+      covered += Math.max(0, w.maxX - w.minX) * Math.max(0, w.maxY - w.minY);
+    }
+    let arenaArea;
+    if (currentMapDef().bounds === "rect") {
+      const b = rectArenaBounds(0);
+      arenaArea = Math.max(1, (b.maxX - b.minX) * (b.maxY - b.minY));
+    } else {
+      const r = arenaRadius();
+      arenaArea = Math.max(1, Math.PI * r * r);
+    }
+    return covered / arenaArea;
+  }
+
   function mapModifierWallWeight() {
     const m = mapModifiers;
     let w = 0;
@@ -5993,6 +6190,15 @@
     if (m.movers) w += 0.5;
     if (m.portals) w += 0.35;
     if (m.bounds === "rect") w += 0.45;
+    // Custom maps don't use any of the procedural toggles above (they're
+    // always forced off — see applyCustomMapToModifiers), so without this
+    // a custom map with a maze's worth of hand-placed obstacles would
+    // still read as a wide-open floor and Ricochet would go untouched.
+    // Calibrated so ~35% of the arena covered lands around maze's own
+    // weight of 5.
+    if (customMapsAllowedForMode() && getActiveCustomMap()) {
+      w += mapCoveredAreaRatio() * 14;
+    }
     return w;
   }
 
@@ -6930,6 +7136,8 @@
     mapRuntime.bases = [];
     mapRuntime.shadows = [];
     mapRuntime.shadowNextId = 0;
+    mapRuntime.corpses = [];
+    mapRuntime.corpseNextId = 0;
 
     if (gameMode === "siege") {
       const b = rectArenaBounds(0);
@@ -7383,6 +7591,286 @@
     const list = mapRuntime.creatures;
     for (let i = list.length - 1; i >= 0; i--) {
       if (list[i].hp <= 0) list.splice(i, 1);
+    }
+  }
+
+  // ---- Corpse walls (map modifier) -------------------------------------
+
+  function spawnCorpse(x, y, r, maxHp, color, characterId, facing, isBot) {
+    const hp = Math.max(1, Math.round(maxHp));
+    mapRuntime.corpses.push({
+      id: mapRuntime.corpseNextId++,
+      x,
+      y,
+      vx: 0,
+      vy: 0,
+      r,
+      hp,
+      maxHp: hp,
+      color: color || "#8b8f9a",
+      characterId: characterId || "brawler",
+      facing: facing || 0,
+      isBot: !!isBot,
+      hitFlash: 0,
+    });
+  }
+
+  function damageCorpse(b, dmg, knockFrom) {
+    dmg = scaleDmg(dmg);
+    if (!Number.isFinite(b.hp) || b.hp <= 0) {
+      b.hp = 0;
+      return 0;
+    }
+    if (!(dmg > 0) || !Number.isFinite(dmg)) return 0;
+    const hpBefore = b.hp;
+    b.hp = Math.max(0, b.hp - dmg);
+    const dealt = hpBefore - b.hp;
+    b.hitFlash = 0.16;
+    if (dealt > 0) {
+      spawnHitSparks(b.x, b.y, "rgba(180, 180, 190, 1)", 4);
+    }
+    if (knockFrom && dmg > 0) {
+      const dx = b.x - knockFrom.x;
+      const dy = b.y - knockFrom.y;
+      const n = norm(dx, dy);
+      const kb = KNOCKBACK * CORPSE_KNOCKBACK_MUL;
+      b.vx += n.x * kb;
+      b.vy += n.y * kb;
+    }
+    if (b.hp <= 0) {
+      spawnPopBurst(b.x, b.y, "rgba(150, 150, 160, 1)");
+    }
+    return dealt;
+  }
+
+  function removeDeadCorpses() {
+    const list = mapRuntime.corpses;
+    for (let i = list.length - 1; i >= 0; i--) {
+      if (list[i].hp <= 0) list.splice(i, 1);
+    }
+  }
+
+  /** Static-only obstacle list for corpse physics: real map obstacles and
+   *  movers, but never other corpses — corpse-vs-corpse is its own soft
+   *  push in separateCorpsesFromFighters, not a rigid collision. */
+  function getStaticObstaclesForCorpses() {
+    const list = mapRuntime.obstacles.slice();
+    for (let i = 0; i < mapRuntime.movers.length; i++) {
+      const m = mapRuntime.movers[i];
+      list.push({ x: m.x, y: m.y, r: m.r });
+    }
+    return list;
+  }
+
+  function resolveCorpseWall(b) {
+    let res = resolveArenaBoundary(b.x, b.y, b.vx, b.vy, b.r);
+    const obs = getStaticObstaclesForCorpses();
+    for (let i = 0; i < obs.length; i++) {
+      const o = obs[i];
+      const dx = res.x - o.x;
+      const dy = res.y - o.y;
+      const d = len(dx, dy);
+      const minD = o.r + b.r;
+      if (d >= minD || d < 1e-6) continue;
+      const nx = dx / d;
+      const ny = dy / d;
+      res.x = o.x + nx * minD;
+      res.y = o.y + ny * minD;
+      const dot = res.vx * nx + res.vy * ny;
+      res.vx -= 2 * dot * nx;
+      res.vy -= 2 * dot * ny;
+    }
+    res = resolveWallCollision(res.x, res.y, res.vx, res.vy, wallCollisionRadius(b.r));
+    b.x = res.x;
+    b.y = res.y;
+    b.vx = res.vx;
+    b.vy = res.vy;
+  }
+
+  /** Walking into a corpse shoves it aside (mostly the corpse gives way,
+   *  the fighter is slowed a little too), and corpses shove each other
+   *  apart the same way — mirrors separateCreaturesFromFighters. */
+  function separateCorpsesFromFighters() {
+    const list = mapRuntime.corpses;
+    for (let pass = 0; pass < 4; pass++) {
+      for (let bi = 0; bi < list.length; bi++) {
+        const b = list[bi];
+        for (let pi = 0; pi < players.length; pi++) {
+          const p = players[pi];
+          if (p.hp <= 0) continue;
+          if (isSiphonPhasing(p)) continue;
+          const minD = b.r + getPlayerRadius(p);
+          const dx = b.x - p.x;
+          const dy = b.y - p.y;
+          let d = len(dx, dy);
+          if (d >= minD) continue;
+          let nx;
+          let ny;
+          if (d < 1e-6) {
+            nx = 1;
+            ny = 0;
+          } else {
+            nx = dx / d;
+            ny = dy / d;
+          }
+          const push = (minD - d) * 0.55;
+          b.x += nx * push;
+          b.y += ny * push;
+          p.x -= nx * push * 0.45;
+          p.y -= ny * push * 0.45;
+        }
+        for (let bj = bi + 1; bj < list.length; bj++) {
+          const o = list[bj];
+          const minD = b.r + o.r;
+          const dx = o.x - b.x;
+          const dy = o.y - b.y;
+          let d = len(dx, dy);
+          if (d >= minD) continue;
+          let nx;
+          let ny;
+          if (d < 1e-6) {
+            nx = 1;
+            ny = 0;
+          } else {
+            nx = dx / d;
+            ny = dy / d;
+          }
+          const push = (minD - d) * 0.5;
+          b.x -= nx * push;
+          b.y -= ny * push;
+          o.x += nx * push;
+          o.y += ny * push;
+        }
+        resolveCorpseWall(b);
+      }
+    }
+  }
+
+  /** Corpses never act or move on their own — this just integrates any
+   *  knockback velocity they're currently carrying (with drag, like a
+   *  dead weight skidding to a stop), keeps them out of walls/obstacles,
+   *  resolves the push from fighters walking into them, ticks down the
+   *  hit-flash timer, and clears out anything that just hit 0 HP. */
+  function updateCorpses(dt) {
+    const list = mapRuntime.corpses;
+    for (let i = 0; i < list.length; i++) {
+      const b = list[i];
+      b.hitFlash = Math.max(0, b.hitFlash - dt);
+      b.x += b.vx * dt;
+      b.y += b.vy * dt;
+      b.vx *= CORPSE_FRICTION;
+      b.vy *= CORPSE_FRICTION;
+      if (len(b.vx, b.vy) < 0.5) {
+        b.vx = 0;
+        b.vy = 0;
+      }
+      resolveCorpseWall(b);
+    }
+    separateCorpsesFromFighters();
+    removeDeadCorpses();
+  }
+
+  function corpseMeleeHit(attacker, b) {
+    if (attacker.attackT <= 0 || attacker.hp <= 0 || b.hp <= 0) return false;
+    if (isBulwarkAuraSwing(attacker)) {
+      const ratio = attacker.lastSwingChargeRatio;
+      const radius = auraRadiusForPlayer(attacker, ratio);
+      return len(b.x - attacker.x, b.y - attacker.y) <= radius + b.r;
+    }
+    if (
+      attacker.attackStyle === "ranged" ||
+      attacker.attackStyle === "spread" ||
+      attacker.attackStyle === "nova" ||
+      attacker.attackStyle === "barrage" ||
+      attacker.attackStyle === "dash" ||
+      attacker.attackStyle === "phoenix" ||
+      attacker.attackStyle === "bounce" ||
+      attacker.attackStyle === "beam"
+    ) {
+      return false;
+    }
+    const ratio = attacker.lastSwingChargeRatio;
+    if (attacker.attackStyle === "lance") {
+      return lanceCorridorHit(attacker, b.x, b.y, b.r);
+    }
+    const range = attackSectorRange(attacker, ratio);
+    const arc = attackSectorArc(attacker, ratio);
+    const dx = b.x - attacker.x;
+    const dy = b.y - attacker.y;
+    const d = len(dx, dy);
+    if (d > range + b.r) return false;
+    const ang = Math.atan2(dy, dx);
+    const ad = Math.abs(angleDiff(ang, attacker.facing));
+    if (ad > arc * 0.5) return false;
+    return true;
+  }
+
+  function tryHitCorpses(attacker) {
+    if (!mapModifiers.corpses || gameOver || attacker.hp <= 0 || attacker.attackT <= 0) {
+      return;
+    }
+    const list = mapRuntime.corpses;
+    const swingKey = attacker.playerNum + ":cb:" + attacker.swingId;
+    for (let i = list.length - 1; i >= 0; i--) {
+      const b = list[i];
+      if (b.hp <= 0) continue;
+      if (b.lastHitSwingKey === swingKey) continue;
+      if (!corpseMeleeHit(attacker, b)) continue;
+      b.lastHitSwingKey = swingKey;
+      const dmg =
+        isBulwarkAuraSwing(attacker)
+          ? Math.max(2, attacker.swingDamage * 0.35)
+          : Math.max(3, meleeSwingDamageForTarget(attacker, b.x, b.y) * 0.42);
+      damageCorpse(b, dmg, attacker);
+    }
+    removeDeadCorpses();
+  }
+
+  function projectileHitsCorpse(pr, b) {
+    const dx = b.x - pr.x;
+    const dy = b.y - pr.y;
+    return len(dx, dy) <= pr.r + b.r;
+  }
+
+  function tryProjectileHitCorpses(pr, owner, consumeOnHit) {
+    if (!mapModifiers.corpses || !owner) return false;
+    const list = mapRuntime.corpses;
+    let hit = false;
+    for (let i = 0; i < list.length; i++) {
+      const b = list[i];
+      if (b.hp <= 0) continue;
+      if (!projectileHitsCorpse(pr, b)) continue;
+      const swingKey =
+        pr.ownerNum + ":pcb:" + pr.swingId + ":" + (pr.pelletIdx != null ? pr.pelletIdx : 0);
+      if (b.lastHitSwingKey === swingKey) continue;
+      b.lastHitSwingKey = swingKey;
+      const boltDmg = projectileBoltDamage(pr, { x: b.x, y: b.y });
+      const dealt = Math.max(2, boltDmg * 0.55);
+      damageCorpse(b, dealt, pr);
+      hit = true;
+    }
+    removeDeadCorpses();
+    return hit && consumeOnHit !== false;
+  }
+
+  function tryDashHitCorpse(attacker, b) {
+    if (gameOver || attacker.hp <= 0 || b.hp <= 0) return;
+    if (!isDashing(attacker)) return;
+    const dx = b.x - attacker.x;
+    const dy = b.y - attacker.y;
+    if (len(dx, dy) > getPlayerRadius(attacker) + b.r + DASH_HIT_PAD) return;
+    const swingKey = attacker.playerNum + ":cbd:" + attacker.swingId;
+    if (b.lastHitSwingKey === swingKey) return;
+    b.lastHitSwingKey = swingKey;
+    const perfect = dashMarkerOnDefender(attacker, { x: b.x, y: b.y });
+    const dmgMul = perfect ? DASH_DAMAGE_PERFECT_MUL : DASH_DAMAGE_IMPERFECT_MUL;
+    const dashMul = attacker.dashDamageMul != null ? attacker.dashDamageMul : 1;
+    damageCorpse(b, attacker.swingDamage * dmgMul * dashMul, attacker);
+    attacker.dashHitLanded = true;
+    healFromStrikerUltHit(attacker);
+    if (perfect) {
+      attacker.dashPerfectLanded = true;
+      healFromStrikerPerfectHit(attacker);
     }
   }
 
@@ -8292,6 +8780,7 @@
     healFromStrikerUltHit(attacker);
     if (perfect) {
       attacker.dashPerfectLanded = true;
+      healFromStrikerPerfectHit(attacker);
     }
   }
 
@@ -8694,8 +9183,9 @@
   function dashDistForPlayer(p, ratio) {
     if (isPhoenix(p)) {
       return (
-        PHOENIX_DASH_DIST_MIN +
-        (PHOENIX_DASH_DIST_MAX - PHOENIX_DASH_DIST_MIN) * ratio
+        (PHOENIX_DASH_DIST_MIN +
+          (PHOENIX_DASH_DIST_MAX - PHOENIX_DASH_DIST_MIN) * ratio) *
+        phoenixReviveRangeMul(p)
       );
     }
     return dashDistForRatio(ratio);
@@ -8720,6 +9210,18 @@
       Math.round(attacker.maxHp * STRIKER_ULT_HIT_HEAL_FRAC)
     );
     attacker.hp = Math.min(attacker.maxHp, attacker.hp + scaleHeal(heal));
+  }
+
+  /** Striker's regular attack only (Phantom Rush already heals its own,
+   *  bigger amount via healFromStrikerUltHit) — a flat 1 HP for every
+   *  perfect-timed dash hit. */
+  function healFromStrikerPerfectHit(attacker) {
+    if (attacker.characterId !== "striker") return;
+    if (isStrikerUltDash(attacker) || attacker.hp <= 0) return;
+    attacker.hp = Math.min(
+      attacker.maxHp,
+      attacker.hp + scaleHeal(STRIKER_PERFECT_HIT_HEAL)
+    );
   }
 
   function createPlayer(cfg, playerNum) {
@@ -13344,6 +13846,15 @@
     } catch (e) {
       touchSwapSides = false;
     }
+    try {
+      const raw = localStorage.getItem(SETTING_GAMEPAD_ASSIGNMENT_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      gamepadSlotAssignment = Array.isArray(parsed)
+        ? parsed.map((v) => (Number.isInteger(v) ? v : null))
+        : [];
+    } catch (e) {
+      gamepadSlotAssignment = [];
+    }
   }
 
   function saveShowInstructions() {
@@ -15134,7 +15645,7 @@
     }
     if (p.attackStyle === "phoenix") {
       if (phoenixUltAttackActive(p)) {
-        const shotR = PHOENIX_SHOT_RANGE;
+        const shotR = phoenixShotRangeForPlayer(p);
         return {
           chase: shotR * 0.94,
           close: PHOENIX_AI_ULT_TOO_CLOSE,
@@ -15142,7 +15653,7 @@
           chargeMax: shotR * PHOENIX_AI_ULT_KITE_MAX_MUL,
         };
       }
-      const shotR = PHOENIX_SHOT_RANGE * 0.72;
+      const shotR = phoenixShotRangeForPlayer(p) * 0.72;
       return {
         chase: shotR * 0.96,
         close: PHOENIX_AI_TOO_CLOSE,
@@ -15394,10 +15905,10 @@
     if (dist < 1e-3) return { ix, iy };
     const forward = phoenixUltAttackActive(p);
     const sweetMin =
-      PHOENIX_SHOT_RANGE *
+      phoenixShotRangeForPlayer(p) *
       (forward ? PHOENIX_AI_ULT_KITE_MIN_MUL : PHOENIX_AI_KITE_MIN_MUL);
     const sweetMax =
-      PHOENIX_SHOT_RANGE *
+      phoenixShotRangeForPlayer(p) *
       (forward ? PHOENIX_AI_ULT_KITE_MAX_MUL : PHOENIX_AI_KITE_MAX_MUL);
     const tooClose = forward ? PHOENIX_AI_ULT_TOO_CLOSE : PHOENIX_AI_TOO_CLOSE;
     if (dist < tooClose) {
@@ -15464,10 +15975,10 @@
     allyAiFacePhoenixTarget(p, best);
     const forward = phoenixUltAttackActive(p);
     const sweetMin =
-      PHOENIX_SHOT_RANGE *
+      phoenixShotRangeForPlayer(p) *
       (forward ? PHOENIX_AI_ULT_KITE_MIN_MUL : PHOENIX_AI_KITE_MIN_MUL);
     const sweetMax =
-      PHOENIX_SHOT_RANGE *
+      phoenixShotRangeForPlayer(p) *
       (forward ? PHOENIX_AI_ULT_KITE_MAX_MUL : PHOENIX_AI_KITE_MAX_MUL);
     const inBand = dist >= sweetMin && dist <= sweetMax;
     if (!inBand) {
@@ -17051,6 +17562,13 @@
         }
         removeDeadCreatures();
       }
+      if (mapModifiers.corpses) {
+        const blist = mapRuntime.corpses;
+        for (let b = 0; b < blist.length; b++) {
+          tryDashHitCorpse(p, blist[b]);
+        }
+        removeDeadCorpses();
+      }
       const mlist = mapRuntime.bossMinions;
       for (let mi = mlist.length - 1; mi >= 0; mi--) {
         const m = mlist[mi];
@@ -17098,6 +17616,7 @@
     healFromStrikerUltHit(attacker);
     if (perfect) {
       attacker.dashPerfectLanded = true;
+      healFromStrikerPerfectHit(attacker);
     }
   }
 
@@ -17135,6 +17654,7 @@
     healFromStrikerUltHit(attacker);
     if (perfect) {
       attacker.dashPerfectLanded = true;
+      healFromStrikerPerfectHit(attacker);
     }
 
   }
@@ -17315,7 +17835,7 @@
 
   function spawnPhoenixBackShots(p, ratio) {
     const speed = PHOENIX_SHOT_SPEED * (0.65 + 0.35 * ratio);
-    const maxDist = PHOENIX_SHOT_RANGE;
+    const maxDist = phoenixShotRangeForPlayer(p);
     const forward = phoenixUltAttackActive(p);
     const spread = forward ? PHOENIX_SHOT_SPREAD_ULT : PHOENIX_SHOT_SPREAD;
     // Both the normal hop and the ult now fire forward (the normal hop's
@@ -17405,7 +17925,7 @@
           knockMul: p.swingKnockMul * 0.5,
           maxDist,
           traveled: 0,
-          r: hitR,
+          r: ECHO_HIT_R,
           color: p.color,
         });
       }
@@ -17461,9 +17981,11 @@
         (tune.bounceDmgMul != null ? tune.bounceDmgMul : 1) *
         chargeBoost;
     const dmgMul = tune.damageMul != null ? tune.damageMul : 1;
+    const ultMul = pr.ultShot ? RICOCHET_ULT_DAMAGE_MUL : 1;
     return (
       RICOCHET_DAMAGE_INITIAL *
       dmgMul *
+      ultMul *
       chargeDmgMul *
       Math.pow(Math.max(1.01, growth), bounces)
     );
@@ -17955,6 +18477,7 @@
     }
 
     tryProjectileHitCreatures(pr, owner, false);
+    tryProjectileHitCorpses(pr, owner, false);
     tryProjectileHitEchoSummons(pr, owner, false);
     tryProjectileHitPikeSpears(pr, owner, false);
     tryProjectileHitMarionetteEffigies(pr, owner, false);
@@ -18233,6 +18756,11 @@
         continue;
       }
 
+      if (tryProjectileHitCorpses(pr, owner, true)) {
+        projectiles.splice(i, 1);
+        continue;
+      }
+
       if (tryProjectileHitWaveEnemies(pr, owner, true)) {
         projectiles.splice(i, 1);
         continue;
@@ -18280,7 +18808,19 @@
           (pr.pelletIdx != null ? pr.pelletIdx : 0);
         if (target.lastHitSwingKey === swingKey) continue;
 
-        const boltDmg = projectileBoltDamage(pr, target);
+        let boltDmg = projectileBoltDamage(pr, target);
+        if (pr.kind === "echo") {
+          // Both twin-pistol bullets share this swing's id but have their
+          // own pelletIdx (see spawnProjectile), so the swingKey guard
+          // above only stops the SAME bullet re-hitting — this catches the
+          // OTHER bullet from the same shot landing on the same target.
+          const echoSwingKey = pr.ownerNum + ":" + pr.swingId;
+          if (target.echoHitSwingKey === echoSwingKey) {
+            boltDmg *= ECHO_SECOND_BULLET_DAMAGE_MUL;
+          } else {
+            target.echoHitSwingKey = echoSwingKey;
+          }
+        }
         const sx = pr.spawnX != null ? pr.spawnX : pr.x;
         const sy = pr.spawnY != null ? pr.spawnY : pr.y;
         const distT = len(target.x - sx, target.y - sy);
@@ -18621,6 +19161,37 @@
       ctx.lineWidth = 2;
       ctx.stroke();
       ctx.restore();
+    }
+
+    for (let i = 0; i < mapRuntime.corpses.length; i++) {
+      const b = mapRuntime.corpses[i];
+      const flash = b.hitFlash > 0;
+      ctx.save();
+      ctx.translate(b.x, b.y);
+      ctx.rotate(b.facing || 0);
+      // The real fighter's own body shape/color (same drawFighterBody every
+      // live player uses), just desaturated and darkened to read as dead —
+      // a hit still flashes bright, same as it would on the real thing.
+      ctx.filter = flash ? "none" : "grayscale(0.65) brightness(0.55)";
+      drawFighterBody(
+        { isBot: b.isBot, characterId: b.characterId, color: b.color },
+        b.r,
+        flash
+      );
+      ctx.filter = "none";
+      ctx.restore();
+      // Thin remaining-HP ring so it reads as breakable, not a fixed prop.
+      const hpFrac = b.maxHp > 0 ? clamp(b.hp / b.maxHp, 0, 1) : 0;
+      if (hpFrac < 1) {
+        ctx.save();
+        ctx.translate(b.x, b.y);
+        ctx.beginPath();
+        ctx.arc(0, 0, b.r + 4, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * hpFrac);
+        ctx.strokeStyle = "rgba(220, 90, 90, 0.85)";
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
+        ctx.restore();
+      }
     }
 
     for (let i = 0; i < mapRuntime.portals.length; i++) {
@@ -19717,20 +20288,21 @@
         }
         ctx.setLineDash([]);
       } else if (isEcho(p)) {
-        // Echo: a wavering ghost double-line.
-        ctx.globalAlpha = 0.14 + 0.3 * ratio;
+        // Echo: twin parallel sightlines — same forward/side offsets the
+        // real twin-pistol shot spawns from (see spawnProjectile), so the
+        // preview shows exactly where both bullets will actually travel.
+        const echoForward = PLAYER_R + 4;
+        const echoOffset = PLAYER_R * 0.5;
         ctx.strokeStyle = p.color;
         ctx.lineWidth = 2 + 2 * ratio;
         ctx.setLineDash([6, 8]);
-        ctx.beginPath();
-        ctx.moveTo(PLAYER_R * 0.5, -4);
-        ctx.lineTo(range, -4);
-        ctx.stroke();
-        ctx.globalAlpha = 0.2 + 0.45 * ratio;
-        ctx.beginPath();
-        ctx.moveTo(PLAYER_R * 0.5, 0);
-        ctx.lineTo(range, 0);
-        ctx.stroke();
+        for (let side = -1; side <= 1; side += 2) {
+          ctx.globalAlpha = 0.2 + 0.45 * ratio;
+          ctx.beginPath();
+          ctx.moveTo(echoForward, side * echoOffset);
+          ctx.lineTo(range, side * echoOffset);
+          ctx.stroke();
+        }
         ctx.setLineDash([]);
       } else {
         // Marksman: precise sight-line with crosshair ticks.
@@ -19891,7 +20463,7 @@
     }
     if (isPhoenix(p)) {
       const hop = dashDistForPlayer(p, ratio);
-      const shotR = PHOENIX_SHOT_RANGE * (0.65 + 0.35 * ratio);
+      const shotR = phoenixShotRangeForPlayer(p) * (0.65 + 0.35 * ratio);
       const forward = phoenixUltAttackActive(p);
       const spread = forward ? PHOENIX_SHOT_SPREAD_ULT : PHOENIX_SHOT_SPREAD;
       ctx.globalAlpha = 0.3 + 0.4 * ratio;
@@ -21585,6 +22157,7 @@
 
     pollGamepad();
     updateGamepadStatusUI();
+    renderGamepadAssignUI();
     syncGamepadKeys();
     syncMouseButtonKeys();
     syncTouchKeys();
@@ -21616,6 +22189,7 @@
       gameMode != null
     ) {
       updateMapDynamics(dt);
+      if (mapModifiers.corpses) updateCorpses(dt);
       if (gameMode === "siege") updateBases(dt);
       if (gameMode === "horde") updateHordeMode(dt);
       players.forEach((p) => steerPlayer(p, dt));
@@ -21627,6 +22201,7 @@
       }
       separatePlayers();
       if (mapHasCreatures()) separateCreaturesFromFighters();
+      if (mapModifiers.corpses) separateCorpsesFromFighters();
       if (gameMode === "horde") separateWaveEnemiesFromFighters();
       if (
         (gameMode === "boss" || hordeBossWaveActive()) &&
@@ -21645,6 +22220,7 @@
           if (i !== j) tryHit(players[i], players[j]);
         }
         tryHitCreatures(players[i]);
+        tryHitCorpses(players[i]);
         tryHitWaveEnemies(players[i]);
         tryHitBossMinions(players[i]);
         tryHitEchoSummons(players[i]);
