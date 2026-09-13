@@ -642,6 +642,12 @@
       border-radius: 12px;
       border: 1px solid var(--glass-border);
       background: linear-gradient(165deg, var(--panel-elevated) 0%, var(--panel) 100%);
+      /* .settings-panel's align-items:center means a child otherwise sizes
+         to fit its own content — harmless for short toggle/slider rows,
+         but the gamepad-assign row's nowrap label can be much wider than
+         the panel, which without this blows the card out past the panel's
+         edges instead of eliding the label. */
+      width: 100%;
     }
     #mode-screen .settings-slider-head {
       display: flex;
@@ -695,6 +701,12 @@
       text-overflow: ellipsis;
       white-space: nowrap;
       flex: 1;
+      /* Flex items default to min-width:auto, which floors shrinking at the
+         text's own natural width — without this, a long controller name
+         (ones gamepadAssignLabel() couldn't trim) pushes the whole row
+         wider than the panel instead of actually eliding, shoving the
+         select and the row's own right edge off screen. */
+      min-width: 0;
     }
     .gamepad-assign-row select {
       font-family: inherit;

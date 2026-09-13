@@ -671,7 +671,7 @@
    *  it just never drives that motion itself. It also has its own HP pool
    *  (based on the fighter's own max HP) and disappears once that's
    *  whittled down. */
-  const CORPSE_HP_MUL = 1;
+  const CORPSE_HP_MUL = 0.3;
   const CORPSE_FRICTION = 0.86;
   const CORPSE_KNOCKBACK_MUL = 0.5;
   const CRITTER_DIFFICULTY_PRESETS = {
@@ -953,8 +953,8 @@
       attackStyle: "lance",
       maxHp: 88,
       moveSpeedMul: 0.96,
-      chargeSpeedMul: 1.05,
-      attackDamageMul: 0.98,
+      chargeSpeedMul: 1.365,
+      attackDamageMul: 0.5,
       desc: "101 HP — charged long, narrow spear corridor (weaker up close, stronger at range). <strong>Ult</strong>: Hunting Spear — launch a homing spear that deals massive damage on impact; enemies can destroy it by attacking it.",
       tint: "#38bdf8",
     },
@@ -2368,6 +2368,15 @@
   const GAMEPAD_BTN_ATTACK = 7; // R2 / RT
   const GAMEPAD_BTN_ULTIMATE = 6; // L2 / LT
   const GAMEPAD_BTN_SUPPORT = 2; // Square / X
+  // D-pad, standard mapping — a fallback alongside the left stick for
+  // movement. Some controllers/browsers misreport (or don't expose) the
+  // left stick's axes at all, but the D-pad's button indices are far more
+  // consistently reported across hardware, so this gives movement a way
+  // to work even when the stick doesn't.
+  const GAMEPAD_BTN_DPAD_UP = 12;
+  const GAMEPAD_BTN_DPAD_DOWN = 13;
+  const GAMEPAD_BTN_DPAD_LEFT = 14;
+  const GAMEPAD_BTN_DPAD_RIGHT = 15;
   const SETTING_GAMEPAD_ASSIGNMENT_KEY = "topDownDuel_gamepadSlotAssignment";
   function makeEmptyGamepadState() {
     return { connected: false, lx: 0, ly: 0, rx: 0, ry: 0, buttons: [] };
@@ -5614,10 +5623,10 @@
       }
       const state = gamepadStates[slot];
       if (!state.connected) continue;
-      if (state.ly < 0) keys[c.up] = true;
-      if (state.ly > 0) keys[c.down] = true;
-      if (state.lx < 0) keys[c.left] = true;
-      if (state.lx > 0) keys[c.right] = true;
+      if (state.ly < 0 || state.buttons[GAMEPAD_BTN_DPAD_UP]) keys[c.up] = true;
+      if (state.ly > 0 || state.buttons[GAMEPAD_BTN_DPAD_DOWN]) keys[c.down] = true;
+      if (state.lx < 0 || state.buttons[GAMEPAD_BTN_DPAD_LEFT]) keys[c.left] = true;
+      if (state.lx > 0 || state.buttons[GAMEPAD_BTN_DPAD_RIGHT]) keys[c.right] = true;
       if (state.buttons[GAMEPAD_BTN_ATTACK]) keys[c.attack] = true;
       if (c.ultimate && state.buttons[GAMEPAD_BTN_ULTIMATE]) {
         keys[c.ultimate] = true;
@@ -6107,21 +6116,27 @@
   }
 
   /** Feeds P1's touch input into `keys`, same reset-then-OR approach as
-   *  syncGamepadKeys/syncMouseButtonKeys. Movement codes are P1-exclusive
-   *  so it's safe to reset them here; attack/ultimate are shared with
-   *  mouse aim, whose sync already ran this frame and reset those to
-   *  physKeys, so touch only ORs into them (never resets). */
+   *  syncGamepadKeys/syncMouseButtonKeys. Movement codes used to be safe to
+   *  reset unconditionally since a gamepad could never drive P1 — now that
+   *  it can (see gamepadSlotAssignment), skip the reset+OR while P1 is
+   *  actually gamepad-driven so this doesn't stomp syncGamepadKeys()'s
+   *  contribution back to physKeys (which is false) every frame, same
+   *  guard as syncMouseButtonKeys. Attack/ultimate are shared with mouse
+   *  aim, whose sync already ran this frame and reset those to physKeys,
+   *  so touch only ORs into them (never resets) regardless. */
   function syncTouchKeys() {
     const c = HUMAN_PRESETS[0].controls;
-    const moveCodes = [c.up, c.down, c.left, c.right];
-    for (let i = 0; i < moveCodes.length; i++) {
-      keys[moveCodes[i]] = !!physKeys[moveCodes[i]];
-    }
-    if (touchMoveId != null) {
-      if (touchMoveDX < -TOUCH_MOVE_DEADZONE) keys[c.left] = true;
-      if (touchMoveDX > TOUCH_MOVE_DEADZONE) keys[c.right] = true;
-      if (touchMoveDY < -TOUCH_MOVE_DEADZONE) keys[c.up] = true;
-      if (touchMoveDY > TOUCH_MOVE_DEADZONE) keys[c.down] = true;
+    if (!gamepadStates[0].connected) {
+      const moveCodes = [c.up, c.down, c.left, c.right];
+      for (let i = 0; i < moveCodes.length; i++) {
+        keys[moveCodes[i]] = !!physKeys[moveCodes[i]];
+      }
+      if (touchMoveId != null) {
+        if (touchMoveDX < -TOUCH_MOVE_DEADZONE) keys[c.left] = true;
+        if (touchMoveDX > TOUCH_MOVE_DEADZONE) keys[c.right] = true;
+        if (touchMoveDY < -TOUCH_MOVE_DEADZONE) keys[c.up] = true;
+        if (touchMoveDY > TOUCH_MOVE_DEADZONE) keys[c.down] = true;
+      }
     }
     if (touchAimId != null) keys[c.attack] = true;
     if (touchUltHeld && c.ultimate) keys[c.ultimate] = true;
@@ -7875,6 +7890,7 @@
     if (!mapModifiers.corpses || !owner) return false;
     const list = mapRuntime.corpses;
     let hit = false;
+    let overkilled = false;
     for (let i = 0; i < list.length; i++) {
       const b = list[i];
       if (b.hp <= 0) continue;
@@ -7887,9 +7903,12 @@
       const dealt = Math.max(2, boltDmg * 0.55);
       damageCorpse(b, dealt, pr);
       hit = true;
+      // Enough damage to finish it off in one hit — the shot punches
+      // through the now-destroyed body instead of being spent on it.
+      if (b.hp <= 0) overkilled = true;
     }
     removeDeadCorpses();
-    return hit && consumeOnHit !== false;
+    return hit && consumeOnHit !== false && !overkilled;
   }
 
   function tryDashHitCorpse(attacker, b) {
